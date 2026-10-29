@@ -29,3 +29,4 @@ results/*.log
 .idea/
 .DS_Store
 Thumbs.db
+results/*.png
