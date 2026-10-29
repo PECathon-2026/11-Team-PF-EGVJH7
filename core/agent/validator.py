@@ -116,6 +116,9 @@ def _needs_approval(action, element):
 
     return any(keyword in details for keyword in keywords)
 
+def needs_approval(action, element):
+    """Public interface for checking whether an action needs approval."""
+    return _needs_approval(action, element)
 
 def validate(
     action: Action,
