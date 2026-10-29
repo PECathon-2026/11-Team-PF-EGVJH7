@@ -1,7 +1,7 @@
 """Fail-closed privacy firewall for outgoing payloads."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Iterable
 
 
@@ -45,6 +45,20 @@ def extract_strings(value: Any) -> list[str]:
             result.extend(extract_strings(item))
         return result
 
+    if is_dataclass(value) and not isinstance(value, type):
+        return extract_strings(asdict(value))
+
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        return extract_strings(value.model_dump(mode="json"))
+
+    if hasattr(value, "__dict__"):
+        result = []
+        for attr_name, attr_value in vars(value).items():
+            if attr_name.startswith("_"):
+                continue
+            result.extend(extract_strings(attr_value))
+        return result
+
     if value is None or isinstance(value, (bool, int, float)):
         return []
 
@@ -83,7 +97,7 @@ def _inspect_payload(payload: Any) -> list[str]:
     try:
         return extract_strings(payload)
     except Exception as exc:
-        raise ValueError("Payload could not be inspected.") from exc
+        raise ValueError(f"Payload could not be inspected: {exc}") from exc
 
 
 def _find_leaks(
@@ -140,10 +154,12 @@ def validate_payload(
         secret_values = list(secrets)
         canary_values = list(canaries)
 
-        # Validate each provided inventory and require at least one
-        # protected value across the combined inventories.
+        # Empty inventories are valid when there are no secrets or canaries.
+        # Still reject invalid entries whenever an inventory is provided.
         combined = secret_values + canary_values
-        protected_values = _collect_inventory(combined)
+        if any(not isinstance(value, str) or not value for value in combined):
+            raise ValueError("Inventory contains invalid entries.")
+        protected_values = combined
 
         strings = _inspect_payload(payload)
         leaks = _find_leaks(strings, protected_values)

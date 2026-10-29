@@ -266,13 +266,13 @@ def resolve_detection_bboxes(
 def validate_image(image_bytes: bytes, description: str) -> None:
     """Raise a useful error if the provided image bytes are invalid."""
     if not isinstance(image_bytes, bytes) or not image_bytes:
-        raise ValueError(f"{description} must be non-empty image bytes.")
+        raise ValueError(f"Sanitization failed: {description} must be non-empty image bytes.")
 
     try:
         with Image.open(BytesIO(image_bytes)) as image:
             image.load()
     except Exception as exc:
-        raise ValueError(f"{description} is not a valid readable image.") from exc
+        raise ValueError(f"Sanitization failed: {description} is not a valid readable image.") from exc
 
 
 def sanitize(
@@ -290,81 +290,93 @@ def sanitize(
     if snapshot is None:
         raise ValueError("A page snapshot is required.")
 
-    validate_image(snapshot.screenshot, "Snapshot screenshot")
+    try:
+        validate_image(snapshot.screenshot, "Snapshot screenshot")
 
-    # Avoid mutating the caller's snapshot or detection objects.
-    elements = copy.deepcopy(snapshot.elements or [])
-    working_detections = copy.deepcopy(detections or [])
+        # Avoid mutating the caller's snapshot or detection objects.
+        elements = copy.deepcopy(snapshot.elements or [])
+        working_detections = copy.deepcopy(detections or [])
 
-    # Load the configured rules and apply their supported selector options.
-    rules = load_rules(rules_path)
+        # Load the configured rules and apply their supported selector options.
+        rules = load_rules(rules_path)
 
-    working_detections, rule_report = apply_project_rules(
-        elements,
-        working_detections,
-        rules,
-    )
-
-    # Populate bounding boxes before redacting the screenshot.
-    resolve_detection_bboxes(elements, working_detections)
-
-    # Use the actual function exported by core.sanitize.injection.
-    injection_report = scan_page_elements(elements)
-
-    # Sanitize sensitive values in DOM elements.
-    sanitized_elements, text_report = sanitize_elements(
-        elements,
-        working_detections,
-    )
-
-    # redact_image returns a tuple:
-    # (sanitized_png_bytes, image_redaction_report)
-    with Image.open(BytesIO(snapshot.screenshot)) as source_image:
-        image_size = source_image.size
-    geometry_matches = (
-        snapshot.viewport_size is None
-        or tuple(snapshot.viewport_size) == tuple(image_size)
-    )
-    if geometry_matches:
-        sanitized_screenshot, image_report = redact_image(
-            snapshot.screenshot, working_detections,
+        working_detections, rule_report = apply_project_rules(
+            elements,
+            working_detections,
+            rules,
         )
-    else:
-        sanitized_screenshot = snapshot.screenshot
-        image_report = [{
-            "element_id": str(get_value(d, "element_id", "") or ""),
-            "type": str(get_value(d, "type", "SECRET")),
-            "status": "failed",
-            "reason": ("Screenshot dimensions do not match the captured viewport; "
-                       "image redaction could not be mapped safely."),
-        } for d in working_detections]
 
-    validate_image(sanitized_screenshot, "Sanitized screenshot")
+        # Populate bounding boxes before redacting the screenshot.
+        resolve_detection_bboxes(elements, working_detections)
 
-    screenshot_sha256 = hashlib.sha256(
-        sanitized_screenshot
-    ).hexdigest()
+        # Use the actual function exported by core.sanitize.injection.
+        injection_report = [
+            {
+                **record,
+                "type": "PROMPT_INJECTION",
+            }
+            for record in scan_page_elements(elements)
+            if record.get("flagged")
+        ]
 
-    report = []
-    report.extend(text_report or [])
-    report.extend(image_report or [])
-    unresolved = [row for row in image_report if row.get("status") != "redacted"]
-    report.append({
-        "kind": "image_redaction_summary",
-        "status": "complete" if not unresolved else "incomplete",
-        "redacted": sum(row.get("status") == "redacted" for row in image_report),
-        "unresolved": len(unresolved),
-        "reason": (None if not unresolved else
-                   "One or more sensitive detections were not covered in the screenshot."),
-    })
-    report.extend(injection_report or [])
-    report.extend(rule_report or [])
+        # Sanitize sensitive values in DOM elements.
+        sanitized_elements, text_report = sanitize_elements(
+            elements,
+            working_detections,
+        )
 
-    return SanitizedView(
-        url=snapshot.url,
-        title=snapshot.title,
-        screenshot=sanitized_screenshot,
-        screenshot_sha256=screenshot_sha256,
-        elements=sanitized_elements,
-        report=report,
-    )
+        # redact_image returns a tuple:
+        # (sanitized_png_bytes, image_redaction_report)
+        with Image.open(BytesIO(snapshot.screenshot)) as source_image:
+            image_size = source_image.size
+        geometry_matches = (
+            snapshot.viewport_size is None
+            or tuple(snapshot.viewport_size) == tuple(image_size)
+        )
+        if geometry_matches:
+            sanitized_screenshot, image_report = redact_image(
+                snapshot.screenshot, working_detections,
+            )
+        else:
+            sanitized_screenshot = snapshot.screenshot
+            image_report = [{
+                "element_id": str(get_value(d, "element_id", "") or ""),
+                "type": str(get_value(d, "type", "SECRET")),
+                "status": "failed",
+                "reason": ("Screenshot dimensions do not match the captured viewport; "
+                           "image redaction could not be mapped safely."),
+            } for d in working_detections]
+
+        validate_image(sanitized_screenshot, "Sanitized screenshot")
+
+        screenshot_sha256 = hashlib.sha256(
+            sanitized_screenshot
+        ).hexdigest()
+
+        report = []
+        report.extend(text_report or [])
+        report.extend(image_report or [])
+        unresolved = [row for row in image_report if row.get("status") != "redacted"]
+        report.append({
+            "kind": "image_redaction_summary",
+            "status": "complete" if not unresolved else "incomplete",
+            "redacted": sum(row.get("status") == "redacted" for row in image_report),
+            "unresolved": len(unresolved),
+            "reason": (None if not unresolved else
+                       "One or more sensitive detections were not covered in the screenshot."),
+        })
+        report.extend(injection_report or [])
+        report.extend(rule_report or [])
+
+        return SanitizedView(
+            url=snapshot.url,
+            title=snapshot.title,
+            screenshot=sanitized_screenshot,
+            screenshot_sha256=screenshot_sha256,
+            elements=sanitized_elements,
+            report=report,
+        )
+    except ValueError as exc:
+        if "Sanitization failed" in str(exc):
+            raise
+        raise ValueError(f"Sanitization failed: {exc}") from exc

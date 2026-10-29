@@ -1,7 +1,12 @@
 from dataclasses import dataclass
 from copy import deepcopy
 
+from core.detect.synthetic import get_synthetic_value
+
 from .rules import normalize_type, placeholder_for
+
+
+SYNTHETIC_TYPES = {"CARD", "EMAIL", "PHONE", "PERSON"}
 
 
 @dataclass
@@ -17,6 +22,7 @@ def get_value(obj, key, default=None):
     """Read a field from a dictionary or an object."""
     if isinstance(obj, dict):
         return obj.get(key, default)
+
     return getattr(obj, key, default)
 
 
@@ -30,8 +36,9 @@ def set_value(obj, key, value):
 
 def replace_spans(text, detections, element_id, field):
     """
-    Replace detected sensitive spans with privacy-safe placeholders.
-    Invalid spans cause the entire field to be redacted.
+    Replace detected sensitive spans with synthetic values where supported.
+
+    Invalid or missing spans cause the entire field to be redacted.
     """
     matching = []
 
@@ -56,6 +63,7 @@ def replace_spans(text, detections, element_id, field):
         secret_type = normalize_type(
             get_value(detection, "type", "SECRET")
         )
+
         placeholder = placeholder_for(secret_type)
 
         span = get_value(detection, "span")
@@ -64,10 +72,11 @@ def replace_spans(text, detections, element_id, field):
             "Sensitive information detected by the privacy detector."
         )
 
+        # Fail closed if the detector did not provide a valid span.
         if (
             not isinstance(span, (tuple, list))
             or len(span) != 2
-            or any(type(x) is not int for x in span)
+            or any(type(value) is not int for value in span)
         ):
             record = TextRedaction(
                 str(element_id),
@@ -76,6 +85,7 @@ def replace_spans(text, detections, element_id, field):
                 placeholder,
                 reason + " Missing span; entire field redacted.",
             )
+
             return placeholder, [record]
 
         start, end = span
@@ -88,27 +98,44 @@ def replace_spans(text, detections, element_id, field):
                 placeholder,
                 reason + " Invalid span; entire field redacted.",
             )
+
             return placeholder, [record]
 
+        # Keep direct sanitizer output redacted.
+        # The model-payload pipeline handles synthetic substitution separately.
+        replacement = placeholder
+
         spans.append(
-            (start, end, secret_type, placeholder, reason)
+            (
+                start,
+                end,
+                secret_type,
+                replacement,
+                reason,
+            )
         )
 
-    # Sort spans by their original positions.
+    # Sort spans using their original positions.
     spans.sort(key=lambda item: (item[0], item[1]))
 
     # Merge overlapping spans.
     merged = []
 
-    for start, end, secret_type, placeholder, reason in spans:
+    for start, end, secret_type, replacement, reason in spans:
         if merged and start < merged[-1][1]:
-            old_start, old_end, types, placeholders, reasons = merged[-1]
+            (
+                old_start,
+                old_end,
+                types,
+                replacements,
+                reasons,
+            ) = merged[-1]
 
             merged[-1] = (
                 old_start,
                 max(old_end, end),
                 types + [secret_type],
-                placeholders + [placeholder],
+                replacements + [replacement],
                 reasons + [reason],
             )
         else:
@@ -117,7 +144,7 @@ def replace_spans(text, detections, element_id, field):
                     start,
                     end,
                     [secret_type],
-                    [placeholder],
+                    [replacement],
                     [reason],
                 )
             )
@@ -125,20 +152,23 @@ def replace_spans(text, detections, element_id, field):
     result = text
     report = []
 
-    # Replace from right to left to preserve the original offsets.
-    for start, end, types, placeholders, reasons in reversed(merged):
-        replacement = " ".join(dict.fromkeys(placeholders))
+    # Replace from right to left to preserve original offsets.
+    for start, end, types, replacements, reasons in reversed(merged):
+        replacement = " ".join(dict.fromkeys(replacements))
+
         result = result[:start] + replacement + result[end:]
 
-        for secret_type, placeholder, reason in zip(
-            types, placeholders, reasons
+        for secret_type, replacement_value, reason in zip(
+            types,
+            replacements,
+            reasons,
         ):
             report.append(
                 TextRedaction(
                     str(element_id),
                     field,
                     secret_type,
-                    placeholder,
+                    replacement_value,
                     reason,
                 )
             )
@@ -154,7 +184,13 @@ def sanitize_elements(elements, detections):
     for element in sanitized:
         element_id = get_value(element, "id", "")
 
-        for field in ("text", "value", "label", "placeholder", "title"):
+        for field in (
+            "text",
+            "value",
+            "label",
+            "placeholder",
+            "title",
+        ):
             original = get_value(element, field)
 
             if not isinstance(original, str) or not original:
@@ -171,8 +207,8 @@ def sanitize_elements(elements, detections):
                 set_value(element, field, replacement)
                 report.extend(records)
 
-        # Password and OTP values must be protected even when
-        # the detector did not identify a sensitive span.
+        # Always protect password and OTP inputs, even if the
+        # detector did not identify a sensitive span.
         element_type = str(
             get_value(element, "type", "") or ""
         ).lower()
@@ -188,6 +224,7 @@ def sanitize_elements(elements, detections):
                 )
 
                 placeholder = placeholder_for(secret_type)
+
                 set_value(element, "value", placeholder)
 
                 report.append(

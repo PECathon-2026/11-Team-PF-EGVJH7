@@ -1,4 +1,5 @@
-﻿"""Detect suspicious prompt-injection instructions in webpage content."""
+
+"""Detect suspicious prompt-injection instructions in webpage content."""
 
 from dataclasses import dataclass
 import re
@@ -6,6 +7,7 @@ import re
 
 @dataclass
 class InjectionFinding:
+    """A suspicious instruction found in webpage content."""
     flagged: bool
     category: str
     reason: str
@@ -66,7 +68,7 @@ INJECTION_PATTERNS = [
 
 
 def detect_injection(text):
-    """Return findings for suspicious instruction patterns."""
+    """Return a list of suspicious instruction findings."""
     if not isinstance(text, str) or not text:
         return []
 
@@ -97,7 +99,7 @@ def get_value(obj, key, default=None):
 
 
 def scan_page_elements(elements):
-    """Scan webpage element text fields for suspicious instructions."""
+    """Scan webpage text fields and report suspicious instructions."""
     results = []
     fields = ("text", "value", "label", "placeholder", "title")
 
@@ -111,13 +113,15 @@ def scan_page_elements(elements):
                 continue
 
             for finding in detect_injection(value):
-                results.append({
-                    "element_id": element_id,
-                    "field": field_name,
-                    "flagged": finding.flagged,
-                    "category": finding.category,
-                    "reason": finding.reason,
-                    "matched_rule": finding.matched_rule,
-                })
+                results.append(
+                    {
+                        "element_id": element_id,
+                        "field": field_name,
+                        "flagged": finding.flagged,
+                        "category": finding.category,
+                        "reason": finding.reason,
+                        "matched_rule": finding.matched_rule,
+                    }
+                )
 
     return results

@@ -1,3 +1,5 @@
+"""Capture browser state for the PrivacyLens privacy pipeline."""
+
 from playwright.sync_api import Page
 from uuid import uuid4
 
@@ -6,13 +8,10 @@ from contracts.models import BBox, Element, PageSnapshot
 
 def take_snapshot(page: Page, timeout_ms: int = 30000) -> PageSnapshot:
     """
-    Capture a snapshot of an existing Playwright page.
+    Capture a page snapshot without launching or closing the browser.
 
-    The caller owns the browser lifecycle. This function does not
-    launch or close the browser.
-
-    Each interactive element receives a stable data-pl-id attribute
-    such as e1, e2, e3, which can be used by the executor.
+    Interactive elements receive stable generated IDs (e1, e2, ...).
+    Original DOM attributes are retained separately for privacy rules.
     """
 
     if type(timeout_ms) is not int or not 1 <= timeout_ms <= 30000:
@@ -31,11 +30,17 @@ def take_snapshot(page: Page, timeout_ms: int = 30000) -> PageSnapshot:
         """(elements, snapshotId) => elements.map((el, index) => {
             const id = `e${index + 1}`;
 
-            // Inject a stable ID that the executor can query.
+            // This is an internal locator, not the element's original DOM ID.
             el.setAttribute("data-pl-id", id);
             el.setAttribute("data-pl-snapshot", snapshotId);
 
             const rect = el.getBoundingClientRect();
+
+            const attributes = Object.fromEntries(
+                Array.from(el.attributes).map(
+                    attr => [attr.name, attr.value]
+                )
+            );
 
             return {
                 id,
@@ -64,7 +69,8 @@ def take_snapshot(page: Page, timeout_ms: int = 30000) -> PageSnapshot:
                     href: el.getAttribute("href") || "",
                     disabled: Boolean(el.disabled),
                     readonly: Boolean(el.readOnly)
-                }
+                },
+                attributes
             };
         })""",
         snapshot_id,
@@ -83,6 +89,7 @@ def take_snapshot(page: Page, timeout_ms: int = 30000) -> PageSnapshot:
             value=item["value"],
             bbox=BBox(**item["bbox"]),
             attrs=item["attrs"],
+            attributes=item["attributes"],
         )
         for item in raw_elements
     ]

@@ -26,19 +26,23 @@ PLACEHOLDERS = {
 
 
 def normalize_type(value):
-    """Normalize sensitive-data labels."""
+    """Normalize sensitive-data labels to canonical types."""
     if not value:
         return "SECRET"
 
     label = re.sub(
         r"[^A-Z0-9]+",
         "_",
-        str(value).upper()
+        str(value).upper(),
     ).strip("_")
 
     aliases = {
         "CREDIT_CARD": "CARD",
+        "CREDIT_CARD_NUMBER": "CARD",
+        "CREDITCARD": "CARD",
+        "CREDITCARDNUMBER": "CARD",
         "CARD_NUMBER": "CARD",
+        "CC_NUMBER": "CARD",
         "AADHAR": "AADHAAR",
         "PHONE_NUMBER": "PHONE",
         "MOBILE": "PHONE",
@@ -60,61 +64,67 @@ def placeholder_for(secret_type):
 
     return PLACEHOLDERS.get(
         normalized,
-        f"[REDACTED:{normalized}]"
+        f"[REDACTED:{normalized}]",
     )
 
 
 def load_rules(path=None):
     """Load and validate the project's privacy rules."""
     if path is None:
-        path = Path(__file__).resolve().parents[2] / "rules.yaml"
-    else:
-        path = Path(path)
+        candidates = [
+            Path(__file__).resolve().parents[2] / "rules.yaml",
+            Path.cwd() / "rules.yaml",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                path = str(candidate)
+                break
+        else:
+            return {
+                "always_redact_selectors": list(
+                    DEFAULT_RULES["always_redact_selectors"]
+                ),
+                "never_redact": list(DEFAULT_RULES["never_redact"]),
+            }
 
-    if not path.exists():
-        return DEFAULT_RULES.copy()
+    rules_path = Path(path)
 
-    try:
-        with path.open("r", encoding="utf-8") as file:
-            data = yaml.safe_load(file) or {}
-    except yaml.YAMLError as exc:
-        raise ValueError(
-            f"Invalid privacy rules YAML: {exc}"
-        ) from exc
-
-    if not isinstance(data, dict):
-        raise ValueError(
-            "Privacy rules must be a YAML mapping."
+    if not rules_path.exists():
+        raise FileNotFoundError(
+            f"Privacy rules file not found: {rules_path}"
         )
 
-    result = DEFAULT_RULES.copy()
+    with rules_path.open("r", encoding="utf-8") as file:
+        loaded = yaml.safe_load(file) or {}
 
-    for key in result:
-        value = data.get(key, [])
+    if not isinstance(loaded, dict):
+        raise ValueError("Privacy rules must be a YAML mapping.")
 
+    rules = {
+        "always_redact_selectors": loaded.get(
+            "always_redact_selectors",
+            [],
+        ),
+        "never_redact": loaded.get(
+            "never_redact",
+            [],
+        ),
+    }
+
+    for key, value in rules.items():
         if not isinstance(value, list):
-            raise ValueError(
-                f"'{key}' must be a list."
-            )
+            raise ValueError(f"'{key}' must be a list.")
 
         if not all(isinstance(item, str) for item in value):
             raise ValueError(
-                f"Every entry in '{key}' must be a string."
+                f"Every item in '{key}' must be a string."
             )
 
-        result[key] = value
-
-    return result
+    return rules
 
 
 def matches_selector(element, selectors):
-    """Match basic CSS selectors against webpage elements."""
-    def get_value(obj, key, default=None):
-        if isinstance(obj, dict):
-            return obj.get(key, default)
-
-        return getattr(obj, key, default)
-
+    """Check whether an element matches a configured CSS-like selector."""
     element_id = str(get_value(element, "id", "") or "")
     tag = str(get_value(element, "tag", "") or "").lower()
 
@@ -126,7 +136,7 @@ def matches_selector(element, selectors):
     classes = str(
         attributes.get(
             "class",
-            get_value(element, "class_name", "")
+            get_value(element, "class_name", ""),
         ) or ""
     ).split()
 
@@ -146,7 +156,7 @@ def matches_selector(element, selectors):
             return True
 
         match = re.fullmatch(
-            r"""\[\s*([a-zA-Z0-9_:-]+)\s*(?:=\s*["'](.*?)["']\s*)?\]""",
+            r""" \[\s*([a-zA-Z0-9_:-]+)\s*(?:=\s*["'](.*?)["']\s*)?\] """.strip(),
             selector,
         )
 
@@ -160,3 +170,11 @@ def matches_selector(element, selectors):
                     return True
 
     return False
+
+
+def get_value(obj, key, default=None):
+    """Read a field from a dictionary or an object."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+
+    return getattr(obj, key, default)

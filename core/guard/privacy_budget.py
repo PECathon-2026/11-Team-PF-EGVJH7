@@ -1,103 +1,70 @@
-﻿"""Rule-based privacy disclosure decisions."""
+"""Conservative task-intent filtering for minimal disclosure."""
 
 from dataclasses import dataclass
 
 
-@dataclass
-class DisclosureDecision:
-    allowed: bool
-    risk: str
-    reason: str
-    representation: str = ""
+SENSITIVE_TYPES = {
+    "CARD",
+    "AADHAAR",
+    "PAN",
+    "PASSWORD",
+    "OTP",
+    "API_KEY",
+    "SECRET",
+}
 
-    @property
-    def disclose(self) -> bool:
-        """Whether disclosure is permitted."""
-        return self.allowed
+
+@dataclass(frozen=True)
+class DisclosureDecision:
+    disclose: bool
+    representation: str
+    reason: str
 
 
 def decide_disclosure(
-    sensitivity: str = "medium",
-    purpose: str = "general",
-    consent: bool = False,
-    **kwargs,
+    data_type: str,
+    task_intent: str,
+    *,
+    field_populated: bool = False,
+    syntactically_valid: bool | None = None,
 ) -> DisclosureDecision:
-    """Make conservative, rule-based disclosure decisions."""
+    """Return a minimized representation, never a raw sensitive value."""
 
-    level = str(sensitivity).strip().lower()
-    purpose_value = str(purpose).strip().lower()
+    kind = str(data_type or "OTHER").upper()
+    intent = str(task_intent or "").lower()
 
-    # Credentials and secrets must never be disclosed.
-    never_disclose = {
-        "password",
-        "passwd",
-        "passphrase",
-        "secret",
-        "api_key",
-        "apikey",
-        "access_token",
-        "refresh_token",
-        "private_key",
-        "credit_card",
-        "cvv",
-        "ssn",
-    }
-
-    if level in never_disclose or level in {
-        "critical",
-        "highly_sensitive",
-    }:
+    if kind in SENSITIVE_TYPES:
         return DisclosureDecision(
             False,
-            "high",
-            "Highly sensitive data must not be disclosed.",
             "[PROTECTED]",
+            "High-sensitivity values are never disclosed to the model.",
         )
 
-    # Other sensitive personal data requires explicit consent.
-    if level in {
-        "high",
-        "personal",
-        "sensitive",
-    } and not consent:
-        return DisclosureDecision(
-            False,
-            "high",
-            "Sensitive data requires explicit consent.",
-            "[PROTECTED]",
-        )
-
-    if purpose_value in {
-        "unknown",
-        "unspecified",
-        "unnecessary",
-        "",
-    }:
-        return DisclosureDecision(
-            False,
-            "medium",
-            "Disclosure purpose is unclear.",
-            "[PROTECTED]",
-        )
-
-    # Only disclose a boolean status for field-population checks.
-    if "field_populated" in kwargs:
-        representation = (
-            f"populated={bool(kwargs['field_populated'])}"
-        )
-    else:
-        representation = "allowed=True"
-
-    risk = (
-        level
-        if level in {"low", "medium", "high"}
-        else "medium"
+    permitted_intents = (
+        "check whether",
+        "is the",
+        "validate",
+        "validation",
+        "filled",
+        "populated",
     )
+
+    if any(term in intent for term in permitted_intents):
+        if syntactically_valid is not None:
+            return DisclosureDecision(
+                True,
+                f"valid={bool(syntactically_valid)}",
+                "Only validation status is needed.",
+            )
+
+        return DisclosureDecision(
+            True,
+            f"populated={bool(field_populated)}",
+            "Only field-presence status is needed.",
+        )
 
     return DisclosureDecision(
-        True,
-        risk,
-        "Allowed by the configured rule-based policy.",
-        representation,
+        False,
+        "[OMITTED]",
+        "Task relevance is not established; minimize disclosure by default.",
     )
-
