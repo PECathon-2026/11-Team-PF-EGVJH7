@@ -33,5 +33,8 @@ def detect(snapshot: PageSnapshot) -> list[Detection]:
             if not content: continue
             for dtype, fn in _FINDERS:
                 for start, end, _raw in fn(content):
-                    raw.append(Detection(type=dtype, source="regex", element_id=el.id, field=field, span=(start, end)))
+                    raw.append(Detection(
+                        type=dtype, source="regex", element_id=el.id, field=field, span=(start, end),
+                        bbox=el.bbox # <--- THIS IS THE FIX: Pass the bounding box to P3!
+                    ))
     return merge_detections(raw)

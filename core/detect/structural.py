@@ -13,14 +13,19 @@ _KEYWORD_MAP = [
 
 def structural_hits(el: Element) -> list[Detection]:
     out = []
+    
+    # Helper to give structural hits a span so P3's image drawer catches them
+    span = (0, len(el.value)) if el.value else None
+    
     if el.type == "password":
-        out.append(Detection(type="PASSWORD", source="dom", element_id=el.id, field="value", span=None))
+        out.append(Detection(type="PASSWORD", source="dom", element_id=el.id, field="value", span=span, bbox=el.bbox))
     ac = (el.attrs or {}).get("autocomplete", "").strip().lower()
     if ac in _AUTOCOMPLETE_MAP:
-        out.append(Detection(type=_AUTOCOMPLETE_MAP[ac], source="dom", element_id=el.id, field="value", span=None))
+        out.append(Detection(type=_AUTOCOMPLETE_MAP[ac], source="dom", element_id=el.id, field="value", span=span, bbox=el.bbox))
+    
     hay = " ".join(filter(None, [el.name, el.label, el.id, (el.attrs or {}).get("placeholder", "")])).lower()
     for words, dtype in _KEYWORD_MAP:
         if any(w in hay for w in words):
-            out.append(Detection(type=dtype, source="dom", element_id=el.id, field="value", span=None))
+            out.append(Detection(type=dtype, source="dom", element_id=el.id, field="value", span=span, bbox=el.bbox))
             break
     return out
