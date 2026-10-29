@@ -6,4 +6,3 @@ __all__ = [
     "execute_action",
     "ExecutionError",
 ]
-__all__ = ["take_snapshot"]
