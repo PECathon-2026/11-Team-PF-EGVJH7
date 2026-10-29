@@ -1,0 +1,28 @@
+﻿<!DOCTYPE html>
+<html>
+<head><title>Checkout</title></head>
+<body>
+  <h1>Checkout</h1>
+  <form>
+    <label for="name">Full name</label>
+    <input id="name" name="name" type="text" value="Test User">
+
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" value="test.user@example.com">
+
+    <label for="address">Address</label>
+    <input id="address" name="address" type="text" value="42 MG Road, Bengaluru">
+
+    <label for="card">Card number</label>
+    <input id="card" name="card" type="text" autocomplete="cc-number" value="4111 1111 1111 1111">
+
+    <label for="cvv">CVV</label>
+    <input id="cvv" name="cvv" type="text" autocomplete="cc-csc" value="123">
+
+    <label for="exp">Expiry</label>
+    <input id="exp" name="exp" type="text" value="12/29">
+
+    <button id="pay" type="button">Pay Now</button>
+  </form>
+</body>
+</html>

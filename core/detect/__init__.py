@@ -1,9 +1,25 @@
 ﻿from contracts.models import PageSnapshot, Detection
+from .patterns import find_cards, find_aadhaar, find_pan, find_email, find_phone, find_otp
+from .structural import structural_hits
+from .merge import merge_detections
 
-def detect(snapshot: PageSnapshot) -> list[Detection]:
-    """Full page detection. Stub — returns nothing yet."""
-    return []
+_FINDERS = [("CARD", find_cards), ("AADHAAR", find_aadhaar), ("PAN", find_pan), ("EMAIL", find_email), ("PHONE", find_phone), ("OTP", find_otp)]
 
 def scan_text(text: str) -> list[Detection]:
-    """Regex-only text scan for P3's guard. Stub — returns nothing yet."""
-    return []
+    out = []
+    for dtype, fn in _FINDERS:
+        for start, end, _raw in fn(text):
+            out.append(Detection(type=dtype, source="regex", field="value", span=(start, end)))
+    return out
+
+def detect(snapshot: PageSnapshot) -> list[Detection]:
+    raw = []
+    for el in snapshot.elements:
+        raw.extend(structural_hits(el))
+        for field in ("text", "value", "label"):
+            content = getattr(el, field, "") or ""
+            if not content: continue
+            for dtype, fn in _FINDERS:
+                for start, end, _raw in fn(content):
+                    raw.append(Detection(type=dtype, source="regex", element_id=el.id, field=field, span=(start, end)))
+    return merge_detections(raw)

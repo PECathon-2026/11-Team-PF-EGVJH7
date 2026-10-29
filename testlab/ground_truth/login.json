@@ -1,0 +1,5 @@
+﻿[
+  {"element_id_selector": "#email",    "type": "EMAIL",    "value": "alice@example.com"},
+  {"element_id_selector": "#password", "type": "PASSWORD", "value": "hunter2-secret"},
+  {"element_id_selector": "#otp",      "type": "OTP",      "value": "482913"}
+]
