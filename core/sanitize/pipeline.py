@@ -5,7 +5,7 @@ retain it only in trusted execution state and never pass it to an LLM.
 """
 
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Callable
 import re
 
@@ -152,6 +152,118 @@ def _replace_recursive(
     return value
 
 
+def _apply_synthetic_replacements_to_spans(
+    serialized_elements, original_elements, detections, replacements
+):
+    """Apply synthetic values to valid detected spans before global replacement.
+
+    Sanitization may have replaced a detected span with a generic redaction
+    marker. Reconstruct only fields whose detections all have valid,
+    non-overlapping spans; invalid or overlapping fields remain sanitized.
+    """
+    original_by_id = {
+        str(_get(element, "id", "")): element for element in original_elements
+    }
+    serialized_by_id = {
+        str(element.get("id", "")): element
+        for element in serialized_elements
+        if isinstance(element, dict)
+    }
+
+    grouped = {}
+    invalid_groups = set()
+
+    for detection in detections:
+        element_id = str(_get(detection, "element_id", ""))
+        field_name = str(_get(detection, "field", "value") or "value")
+        group_key = (element_id, field_name)
+        original_element = original_by_id.get(element_id)
+        if original_element is None:
+            invalid_groups.add(group_key)
+            continue
+
+        original_text = _get(original_element, field_name)
+        span = _get(detection, "span")
+        if (
+            not isinstance(original_text, str)
+            or not isinstance(span, (tuple, list))
+            or len(span) != 2
+            or type(span[0]) is not int
+            or type(span[1]) is not int
+            or not (0 <= span[0] < span[1] <= len(original_text))
+        ):
+            invalid_groups.add(group_key)
+            continue
+
+        start, end = span
+        original_secret = original_text[start:end]
+        if not original_secret or original_secret not in replacements:
+            invalid_groups.add(group_key)
+            continue
+
+        grouped.setdefault(group_key, []).append(
+            (start, end, replacements[original_secret])
+        )
+
+    for group_key, spans in grouped.items():
+        if group_key in invalid_groups:
+            continue
+
+        element_id, field_name = group_key
+        original_element = original_by_id.get(element_id)
+        serialized_element = serialized_by_id.get(element_id)
+        if original_element is None or serialized_element is None:
+            continue
+
+        original_text = _get(original_element, field_name)
+        if not isinstance(original_text, str):
+            continue
+
+        ordered_spans = sorted(spans, key=lambda item: (item[0], item[1]))
+        if any(
+            ordered_spans[index][1] > ordered_spans[index + 1][0]
+            for index in range(len(ordered_spans) - 1)
+        ):
+            continue
+
+        rebuilt_text = original_text
+        for start, end, synthetic in reversed(ordered_spans):
+            rebuilt_text = rebuilt_text[:start] + synthetic + rebuilt_text[end:]
+        serialized_element[field_name] = rebuilt_text
+
+
+def _collect_sensitive_values(elements):
+    """Collect known secrets for outgoing-payload leakage validation."""
+    sensitive_key = re.compile(
+        r"(?:password|passwd|secret|token|api.?key|card.?number|"
+        r"cvv|cvc|otp|one.?time.?code|credential)",
+        re.IGNORECASE,
+    )
+    protected = []
+
+    for element in elements:
+        field_type = str(_get(element, "type", "") or "").lower()
+        if field_type in {"password", "otp", "one-time-code"}:
+            value = _get(element, "value")
+            if isinstance(value, str) and value:
+                protected.append(value)
+
+        for container_name in ("attributes", "attrs"):
+            attributes = _get(element, container_name, {})
+            if not isinstance(attributes, dict):
+                continue
+            for key, value in attributes.items():
+                sensitive_attribute = bool(sensitive_key.search(str(key)))
+                sensitive_field_value = (
+                    field_type in {"password", "otp", "one-time-code"}
+                    and str(key).lower() in {"value", "defaultvalue"}
+                )
+                if (sensitive_attribute or sensitive_field_value) and isinstance(value, str) and value:
+                    protected.append(value)
+
+    return protected
+
+
 def build_model_payload(
     snapshot: Any,
     detections: list[Any],
@@ -269,7 +381,7 @@ def build_model_payload(
             for element in view.elements
         ],
         "screenshot_sha256": view.screenshot_sha256,
-        "report": deepcopy(view.report),
+        "report": _serialize_report(view.report),
         "task_intent": str(task_intent or ""),
     }
 

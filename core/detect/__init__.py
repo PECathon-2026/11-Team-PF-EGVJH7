@@ -36,8 +36,8 @@ def detect(snapshot: PageSnapshot) -> list[Detection]:
     merged = merge_detections(raw)
     risk = calculate_mosaic_risk(merged)
     if risk > 10.0:
-        print(f"🚨 [P2 WARNING] HIGH MOSAIC RISK DETECTED ({risk}). Multiple identity factors found!")
+        print(f"[P2 WARNING] HIGH MOSAIC RISK DETECTED ({risk}). Multiple identity factors found!")
     else:
-        print(f"✅ [P2] Mosaic Risk Score: {risk}")
+        print(f"[P2] Mosaic Risk Score: {risk}")
         
     return merged
