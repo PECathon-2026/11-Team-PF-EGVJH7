@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.venv/
+venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Local vault: never commit real secrets
+.vault.json
+
+# Test outputs
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Generated evaluation results
+results/*.json
+results/*.csv
+results/*.log
+
+# IDE and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
