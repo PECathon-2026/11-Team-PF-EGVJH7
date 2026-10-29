@@ -1,0 +1,15 @@
+# PrivacyLens custom privacy rules
+
+always_redact_selectors:
+  - "#card-number"
+  - "#credit-card"
+  - "#password"
+  - "#cvv"
+  - "#otp"
+  - "[data-sensitive='true']"
+  - "[autocomplete='cc-number']"
+  - "[autocomplete='cc-csc']"
+  - "[autocomplete='current-password']"
+  - "[autocomplete='new-password']"
+
+never_redact: []
