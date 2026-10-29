@@ -1,221 +1,342 @@
+"""Privacy sanitization pipeline for webpage snapshots."""
 
-from copy import deepcopy
-from hashlib import sha256
-from dataclasses import dataclass, field
+import copy
+import hashlib
+from dataclasses import dataclass
 from io import BytesIO
-import math
+from typing import Any, Optional
 
 from PIL import Image
 
-from .image import redact_image
-from .injection import scan_page_elements
-from .rules import load_rules, matches_selector
-from .text import sanitize_elements
+from contracts.models import Detection, Element, PageSnapshot
+from core.sanitize.image import redact_image
+from core.sanitize.injection import scan_page_elements
+from core.sanitize.rules import (
+    load_rules,
+    matches_selector,
+    normalize_type,
+    placeholder_for,
+)
+from core.sanitize.text import sanitize_elements
 
 
 @dataclass
 class SanitizedView:
-    """Sanitized representation of a webpage."""
+    """A sanitized webpage snapshot ready for downstream processing."""
+
     url: str
     title: str
     screenshot: bytes
-    elements: list
     screenshot_sha256: str
-    report: list = field(default_factory=list)
+    elements: list[Element]
+    report: list[dict[str, Any]]
 
 
-def get_value(obj, key, default=None):
-    """Read data from a dictionary or an object."""
+def get_value(obj: Any, key: str, default: Any = None) -> Any:
+    """Read a field from either a dictionary or an object."""
     if isinstance(obj, dict):
         return obj.get(key, default)
 
     return getattr(obj, key, default)
 
 
+def bbox_to_dict(bbox: Any) -> Optional[dict[str, float]]:
+    """Convert a bounding box into the format expected by image redaction."""
+    if bbox is None:
+        return None
 
-def make_full_field_detection(element, field, secret_type):
-    """Create a detection that redacts the entire matching field."""
-    return {
-        "element_id": str(get_value(element, "id", "")),
-        "field": field,
-        "type": secret_type,
-        "source": "custom_privacy_rule",
+    if isinstance(bbox, dict):
+        values = bbox
+    elif hasattr(bbox, "model_dump"):
+        values = bbox.model_dump()
+    elif hasattr(bbox, "dict"):
+        values = bbox.dict()
+    else:
+        values = {
+            "x": get_value(bbox, "x"),
+            "y": get_value(bbox, "y"),
+            "w": get_value(bbox, "w"),
+            "h": get_value(bbox, "h"),
+        }
+
+    try:
+        result = {
+            "x": float(values["x"]),
+            "y": float(values["y"]),
+            "w": float(values["w"]),
+            "h": float(values["h"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    if result["w"] <= 0 or result["h"] <= 0:
+        return None
+
+    return result
+
+
+def element_attributes(element: Any) -> dict:
+    """Get an element's HTML attributes using the project's supported fields."""
+    attrs = get_value(element, "attrs", None)
+
+    if not isinstance(attrs, dict):
+        attrs = get_value(element, "attributes", None)
+
+    return attrs if isinstance(attrs, dict) else {}
+
+
+def selector_matches(element: Any, selectors: list[str]) -> bool:
+    """Match an element against the project's configured CSS selectors."""
+    if not selectors:
+        return False
+
+    # The project's selector matcher reads the 'attributes' field.
+    # Make a shallow copy when the original element uses 'attrs' instead.
+    attrs = element_attributes(element)
+
+    if isinstance(element, dict):
+        candidate = dict(element)
+        candidate["attributes"] = attrs
+    else:
+        candidate = copy.copy(element)
+
+        try:
+            setattr(candidate, "attributes", attrs)
+        except (AttributeError, TypeError):
+            pass
+
+    return matches_selector(candidate, selectors)
+
+
+def make_detection(
+    element: Any,
+    detection_type: str,
+    reason: str,
+) -> Detection:
+    """Create a detection compatible with the existing model."""
+    element_id = str(get_value(element, "id", "") or "")
+    bbox = bbox_to_dict(get_value(element, "bbox"))
+
+    detection_data = {
+        "type": normalize_type(detection_type),
+        "source": "custom_rule",
+        "element_id": element_id,
+        "field": "value",
         "span": None,
-        "bbox": get_value(element, "bbox"),
     }
 
+    if bbox is not None:
+        detection_data["bbox"] = bbox
 
-def validate_image_detections(detections, image_size):
-    """Reject malformed or out-of-bounds bounding boxes."""
-    width, height = image_size
+    detection = Detection(**detection_data)
+
+    # Preserve the reason in a separate attribute only if the model supports it.
+    # The custom-rule report below also records the reason.
+    return detection
+
+
+def apply_project_rules(
+    elements: list[Element],
+    detections: list[Any],
+    rules: dict,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    """
+    Apply always_redact_selectors and never_redact from rules.yaml.
+
+    Elements matched by never_redact are excluded from the existing detections.
+    Elements matched by always_redact_selectors receive a SECRET detection.
+    """
+    always_selectors = rules.get("always_redact_selectors", [])
+    never_selectors = rules.get("never_redact", [])
+
+    elements_by_id = {
+        str(get_value(element, "id", "")): element
+        for element in elements
+        if get_value(element, "id")
+    }
+
+    protected_ids = set()
+    always_redact_ids = set()
+
+    for element in elements:
+        element_id = str(get_value(element, "id", "") or "")
+
+        if not element_id:
+            continue
+
+        if selector_matches(element, never_selectors):
+            protected_ids.add(element_id)
+
+        if selector_matches(element, always_selectors):
+            always_redact_ids.add(element_id)
+
+    # Explicit never_redact rules take precedence over automatic detections.
+    filtered_detections = [
+        detection
+        for detection in detections
+        if str(get_value(detection, "element_id", "") or "")
+        not in protected_ids
+    ]
+
+    existing = {
+        (
+            str(get_value(detection, "element_id", "") or ""),
+            normalize_type(get_value(detection, "type", "SECRET")),
+        )
+        for detection in filtered_detections
+    }
+
+    rule_report = []
+
+    for element_id in sorted(always_redact_ids):
+        key = (element_id, "SECRET")
+
+        if key in existing:
+            continue
+
+        element = elements_by_id[element_id]
+        detection = make_detection(element, "SECRET", "Matched always_redact_selectors")
+
+        filtered_detections.append(detection)
+
+        rule_report.append({
+            "element_id": element_id,
+            "type": "SECRET",
+            "field": "value",
+            "reason": "Element matched an always_redact_selectors rule.",
+            "placeholder": placeholder_for("SECRET"),
+        })
+
+    for element_id in sorted(protected_ids):
+        rule_report.append({
+            "element_id": element_id,
+            "type": "NEVER_REDACT",
+            "reason": "Element matched a never_redact rule; automatic detections were skipped.",
+        })
+
+    return filtered_detections, rule_report
+
+
+def resolve_detection_bboxes(
+    elements: list[Element],
+    detections: list[Any],
+) -> list[Any]:
+    """Fill missing detection geometry from its corresponding snapshot element."""
+    elements_by_id = {
+        str(get_value(element, "id", "")): element
+        for element in elements
+        if get_value(element, "id")
+    }
 
     for detection in detections:
-        bbox = get_value(detection, "bbox")
+        if get_value(detection, "bbox") is not None:
+            continue
 
-        # Bounding boxes are optional for text-only detections.
+        element_id = str(
+            get_value(detection, "element_id", "") or ""
+        )
+
+        element = elements_by_id.get(element_id)
+
+        if element is None:
+            continue
+
+        bbox = bbox_to_dict(get_value(element, "bbox"))
+
         if bbox is None:
             continue
 
-        keys = ("x", "y", "w", "h")
+        try:
+            if isinstance(detection, dict):
+                detection["bbox"] = bbox
+            else:
+                detection.bbox = bbox
+        except (AttributeError, TypeError, ValueError):
+            # If the detection model rejects assignment, leave it unchanged.
+            # Image redaction will report any unusable geometry.
+            continue
 
-        if isinstance(bbox, dict):
-            if any(key not in bbox for key in keys):
-                raise ValueError(
-                    "Sanitization failed: bounding box is missing coordinates."
-                )
-            values = [bbox[key] for key in keys]
-
-        elif all(hasattr(bbox, key) for key in keys):
-            values = [getattr(bbox, key) for key in keys]
-
-        else:
-            raise ValueError(
-                "Sanitization failed: invalid bounding box."
-            )
-
-        if any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-            for value in values
-        ):
-            raise ValueError(
-                "Sanitization failed: bounding box coordinates must be finite numbers."
-            )
-
-        x, y, w, h = values
-
-        if (
-            x < 0
-            or y < 0
-            or w <= 0
-            or h <= 0
-            or x + w > width
-            or y + h > height
-        ):
-            raise ValueError(
-                "Sanitization failed: bounding box is invalid or out of bounds."
-            )
+    return detections
 
 
-def sanitize(snapshot, detections, rules_path=None):
-    """
-    Sanitize a webpage snapshot before it is included in an AI request.
+def validate_image(image_bytes: bytes, description: str) -> None:
+    """Raise a useful error if the provided image bytes are invalid."""
+    if not isinstance(image_bytes, bytes) or not image_bytes:
+        raise ValueError(f"{description} must be non-empty image bytes.")
 
-    Returns:
-        SanitizedView containing the sanitized screenshot, elements,
-        screenshot hash, and a redaction/security report.
-
-    Raises:
-        ValueError: If the screenshot or bounding boxes are invalid.
-    """
-    screenshot = get_value(snapshot, "screenshot")
-    original_elements = get_value(snapshot, "elements", [])
-
-    if not isinstance(screenshot, bytes) or not screenshot:
-        raise ValueError(
-            "Sanitization failed: screenshot bytes are missing."
-        )
-
-    if original_elements is None:
-        original_elements = []
-
-    # Validate the screenshot before processing it.
     try:
-        with Image.open(BytesIO(screenshot)) as image:
-            image_size = image.size
-            image.verify()
+        with Image.open(BytesIO(image_bytes)) as image:
+            image.load()
     except Exception as exc:
-        raise ValueError(
-            "Sanitization failed: screenshot is not a valid image."
-        ) from exc
+        raise ValueError(f"{description} is not a valid readable image.") from exc
 
-    # Preserve the caller's original elements.
-    elements = deepcopy(list(original_elements))
-    detections = list(detections or [])
 
-    # Load configured privacy rules.
+def sanitize(
+    snapshot: PageSnapshot,
+    detections: list[Any],
+    rules_path: Optional[str] = None,
+) -> SanitizedView:
+    """
+    Sanitize DOM data and redact sensitive regions from the screenshot.
+
+    This function preserves the original snapshot and detections by working
+    with deep copies. It uses the project's actual injection scanner,
+    privacy-rule helpers, text sanitizer, and image-redaction function.
+    """
+    if snapshot is None:
+        raise ValueError("A page snapshot is required.")
+
+    validate_image(snapshot.screenshot, "Snapshot screenshot")
+
+    # Avoid mutating the caller's snapshot or detection objects.
+    elements = copy.deepcopy(snapshot.elements or [])
+    working_detections = copy.deepcopy(detections or [])
+
+    # Load the configured rules and apply their supported selector options.
     rules = load_rules(rules_path)
 
-    # Apply mandatory custom privacy selectors.
-    for element in elements:
-        if matches_selector(
-            element,
-            rules["always_redact_selectors"],
-        ):
-            for field_name in ("text", "value", "label"):
-                value = get_value(element, field_name)
+    working_detections, rule_report = apply_project_rules(
+        elements,
+        working_detections,
+        rules,
+    )
 
-                if isinstance(value, str) and value:
-                    detections.append(
-                        make_full_field_detection(
-                            element,
-                            field_name,
-                            "SECRET",
-                        )
-                    )
+    # Populate bounding boxes before redacting the screenshot.
+    resolve_detection_bboxes(elements, working_detections)
 
-    # Flag prompt injection before modifying page text.
-    injection_findings = scan_page_elements(elements)
+    # Use the actual function exported by core.sanitize.injection.
+    injection_report = scan_page_elements(elements)
 
-    # Validate bounding boxes before any image redaction.
-    validate_image_detections(detections, image_size)
-
-    # Sanitize sensitive text and field values.
+    # Sanitize sensitive values in DOM elements.
     sanitized_elements, text_report = sanitize_elements(
         elements,
-        detections,
+        working_detections,
     )
 
-    # Redact sensitive image regions.
+    # redact_image returns a tuple:
+    # (sanitized_png_bytes, image_redaction_report)
     sanitized_screenshot, image_report = redact_image(
-        screenshot,
-        detections,
+        snapshot.screenshot,
+        working_detections,
     )
 
-    # Build a report without including original secret values.
+    validate_image(sanitized_screenshot, "Sanitized screenshot")
+
+    screenshot_sha256 = hashlib.sha256(
+        sanitized_screenshot
+    ).hexdigest()
+
     report = []
-
-    for record in text_report:
-        report.append(
-            {
-                "element_id": record.element_id,
-                "field": record.field,
-                "type": record.secret_type,
-                "placeholder": record.placeholder,
-                "reason": record.reason,
-            }
-        )
-
-    report.extend(image_report)
-
-    # Record prompt-injection findings without copying suspicious text.
-    for finding in injection_findings:
-        report.append(
-            {
-                "element_id": finding["element_id"],
-                "field": finding["field"],
-                "type": "PROMPT_INJECTION",
-                "placeholder": "[FLAGGED:INJECTION]",
-                "reason": finding["reason"],
-                "category": finding["category"],
-            }
-        )
-
-    # Hash the exact sanitized screenshot bytes.
-    screenshot_hash = sha256(sanitized_screenshot).hexdigest()
-
-    url = get_value(snapshot, "url", "") or ""
-    title = get_value(snapshot, "title", "") or ""
+    report.extend(text_report or [])
+    report.extend(image_report or [])
+    report.extend(injection_report or [])
+    report.extend(rule_report or [])
 
     return SanitizedView(
-        url=url,
-        title=title,
+        url=snapshot.url,
+        title=snapshot.title,
         screenshot=sanitized_screenshot,
+        screenshot_sha256=screenshot_sha256,
         elements=sanitized_elements,
-        screenshot_sha256=screenshot_hash,
         report=report,
     )
-
-
-__all__ = ["sanitize", "SanitizedView"]
