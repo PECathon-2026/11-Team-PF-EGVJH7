@@ -22,9 +22,11 @@ def build_request(view, task, history, secret_names):
 
     for element in view.elements:
         if hasattr(element, "model_dump"):
-            elements.append(element.model_dump())
+            data = element.model_dump()
         else:
-            elements.append(element.dict())
+            data = element.dict()
+
+        elements.append(data)
 
     screenshot_b64 = base64.b64encode(
         view.screenshot
@@ -40,8 +42,53 @@ def build_request(view, task, history, secret_names):
     }
 
 
+def _mock_action(request):
+    """Return a deterministic, safe action for the local demo."""
+
+    elements = request.get("elements", [])
+
+    for element in elements:
+        attrs = element.get("attrs") or element.get("attributes") or {}
+
+        details = " ".join([
+            str(element.get("id") or ""),
+            str(element.get("name") or ""),
+            str(element.get("label") or ""),
+            str(element.get("placeholder") or ""),
+            str(element.get("text") or ""),
+            str(element.get("type") or ""),
+            str(attrs.get("name") or ""),
+            str(attrs.get("autocomplete") or ""),
+            str(attrs.get("type") or ""),
+        ]).lower()
+
+        is_card_field = (
+            element.get("tag") == "input"
+            and (
+                "card" in details
+                or "cc-number" in details
+            )
+        )
+
+        if is_card_field and element.get("id"):
+            return Action(
+                type="type",
+                element_id=element["id"],
+                text="DEMO-CARD-ONLY",
+                reason="Local demo: enter synthetic test data.",
+            )
+
+    return Action(
+        type="done",
+        reason="No suitable card field was found in the supplied elements.",
+    )
+
+
 def call_llm(request):
-    """Use Gemini to generate one structured PrivacyLens action."""
+    """Use Gemini by default, or the opt-in local mock."""
+
+    if os.getenv("PRIVACYLENS_MOCK_LLM") == "1":
+        return _mock_action(request)
 
     load_dotenv(ROOT / ".env")
 
@@ -54,7 +101,8 @@ def call_llm(request):
     model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
     client = genai.Client(api_key=api_key)
 
-    # Send only the sanitized page information and task.
+    # Exclude the screenshot from the JSON payload.
+    # The sanitized screenshot is sent separately below.
     safe_request = {
         key: value
         for key, value in request.items()
@@ -78,10 +126,10 @@ def call_llm(request):
         model=model,
         contents=contents,
         config=types.GenerateContentConfig(
-    system_instruction=SYSTEM_PROMPT,
-    response_mime_type="application/json",
-    response_schema=Action,
-),
+            system_instruction=SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            response_schema=Action,
+        ),
     )
 
     if not response.text:
