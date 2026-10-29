@@ -6,7 +6,14 @@ _SYNTH_CACHE = {}
 
 def generate_synthetic_card(real_card: str) -> str:
     clean_real = re.sub(r"[ -]", "", real_card)
-    if len(clean_real) < 13: return real_card
+    
+    # If it's a short number (CVV/CVC), generate a random 3-digit fake
+    if len(clean_real) <= 4:
+        return str(random.randint(100, 999))
+        
+    if len(clean_real) < 13: 
+        return real_card
+        
     bin_prefix = clean_real[:6]
     middle_length = len(clean_real) - 7
     middle = "".join([str(random.randint(0, 9)) for _ in range(middle_length)])
@@ -27,13 +34,11 @@ def generate_synthetic_card(real_card: str) -> str:
     return synthetic_clean
 
 def generate_synthetic_email(real_email: str) -> str:
-    # PDF Rule: Use reserved example domains. Do not carry over real usernames.
     names = ["alex.smith", "jamie.doe", "taylor.jones", "jordan.lee"]
     fake_user = random.choice(names) + "_" + str(random.randint(100, 999))
     return f"{fake_user}@example.com"
 
 def generate_synthetic_phone(real_phone: str) -> str:
-    # PDF Rule: Preserve formatting, use safe test numbers
     return f"+91 9{random.randint(100000000, 999999999)}"
 
 def generate_synthetic_name(real_name: str) -> str:
@@ -41,8 +46,10 @@ def generate_synthetic_name(real_name: str) -> str:
     last_names = ["Doe", "Smith", "Johnson", "Williams", "Brown", "Jones"]
     return f"{random.choice(first_names)} {random.choice(last_names)}"
 
+def generate_synthetic_address(real_address: str) -> str:
+    return f"{random.randint(10, 999)} Synthetic Avenue, Test City"
+
 def get_synthetic_value(det_type: str, real_value: str) -> str:
-    # Master dispatcher. Ensures consistency across repeated calls.
     cache_key = f"{det_type}:{real_value}"
     if cache_key in _SYNTH_CACHE:
         return _SYNTH_CACHE[cache_key]
@@ -52,6 +59,7 @@ def get_synthetic_value(det_type: str, real_value: str) -> str:
         "EMAIL": generate_synthetic_email,
         "PHONE": generate_synthetic_phone,
         "PERSON": generate_synthetic_name,
+        "ADDRESS": generate_synthetic_address,
     }
     
     generator = generators.get(det_type)
