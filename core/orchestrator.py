@@ -130,7 +130,46 @@ def run_task(page, task, vault=None, max_steps=None):
                     "history": history,
                 }
 
-        # 9. Execute only after validation and any required approval.
+                # 9. Revalidate immediately before execution.
+        # The approval wait must never bypass final validation.
+        try:
+            final_result = validate(
+                action=action,
+                view=view,
+                allowed_domains=config["allowed_domains"],
+                vault_names=vault.names(),
+            )
+        except Exception:
+            return {
+                "ok": False,
+                "reason": "Final action validation failed; execution blocked.",
+                "history": history,
+            }
+
+        if not final_result.ok:
+            return {
+                "ok": False,
+                "reason": "Action failed final validation; execution blocked.",
+                "details": final_result.reasons,
+                "history": history,
+            }
+
+        # If final validation newly flags the action as consequential,
+        # require approval before execution.
+        if final_result.needs_approval and not result.needs_approval:
+            try:
+                approved = request_approval(action)
+            except Exception:
+                approved = False
+
+            if not approved:
+                return {
+                    "ok": False,
+                    "reason": "User denied or could not provide approval.",
+                    "history": history,
+                }
+
+        # 10. Execute only after validation and any required approval.
         outcome = execute_action(
             page=page,
             action=action,
