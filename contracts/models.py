@@ -1,10 +1,11 @@
 from typing import Literal, Optional, Any
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, Field, ConfigDict
 
 
 DetType = Literal[
     "CARD", "AADHAAR", "PAN", "EMAIL", "PHONE", "PASSWORD", "OTP",
-    "API_KEY", "IP", "FACE", "PERSON", "ADDRESS", "OTHER"
+    "API_KEY", "IP", "FACE", "PERSON", "ADDRESS", "OTHER", "SECRET"
 ]
 
 
@@ -12,10 +13,12 @@ class BBox(BaseModel):
     x: float
     y: float
     w: float
-    h: float  # Pixel coordinates relative to the screenshot
+    h: float
 
 
 class Element(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str
     tag: str
     role: Optional[str] = None
@@ -25,7 +28,19 @@ class Element(BaseModel):
     text: str = ""
     value: str = ""
     bbox: Optional[BBox] = None
-    attrs: dict[str, str] = Field(default_factory=dict)
+    attrs: dict[str, Any] = Field(default_factory=dict)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+    def model_post_init(self, __context: Any) -> None:
+        # Keep both attribute names compatible with existing modules.
+        if self.attributes and not self.attrs:
+            self.attrs = dict(self.attributes)
+        elif self.attrs and not self.attributes:
+            self.attributes = dict(self.attrs)
+
+
+# Compatibility with sanitizer tests and older modules.
+PageElement = Element
 
 
 class PageSnapshot(BaseModel):
@@ -37,11 +52,14 @@ class PageSnapshot(BaseModel):
 
 class Detection(BaseModel):
     type: DetType
-    source: Literal["regex", "dom", "ocr", "ner", "face", "detector"] = "regex"
+    source: Literal[
+        "regex", "dom", "ocr", "ner", "face", "detector",
+        "custom_privacy_rule"
+    ] = "regex"
     element_id: Optional[str] = None
-    field: Literal["text", "value", "label"] = "value"
+    field: Literal["text", "value", "label", "placeholder", "title"] = "value"
     span: Optional[tuple[int, int]] = None
-    bbox: Optional[BBox] = None
+    bbox: Optional[dict[str, Any] | BBox] = None
     confidence: float = 1.0
 
 
@@ -59,7 +77,7 @@ class SanitizedView(BaseModel):
     screenshot: bytes
     screenshot_sha256: str
     elements: list[Element] = Field(default_factory=list)
-    report: list[RedactionRecord] = Field(default_factory=list)
+    report: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Action(BaseModel):

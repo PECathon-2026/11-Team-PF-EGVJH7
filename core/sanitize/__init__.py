@@ -1,132 +1,116 @@
 
-"""Public entry point for PrivacyLens page sanitization."""
-
 from copy import deepcopy
 from hashlib import sha256
+from dataclasses import dataclass, field
 from io import BytesIO
-from math import isfinite
+import math
 
 from PIL import Image
 
-from contracts.models import SanitizedView
 from .image import redact_image
 from .injection import scan_page_elements
-from .rules import load_rules, matches_selector, normalize_type
+from .rules import load_rules, matches_selector
 from .text import sanitize_elements
 
 
-def _get(obj, key, default=None):
-    """Read a value from a dictionary or a dataclass."""
+@dataclass
+class SanitizedView:
+    """Sanitized representation of a webpage."""
+    url: str
+    title: str
+    screenshot: bytes
+    elements: list
+    screenshot_sha256: str
+    report: list = field(default_factory=list)
+
+
+def get_value(obj, key, default=None):
+    """Read data from a dictionary or an object."""
     if isinstance(obj, dict):
         return obj.get(key, default)
+
     return getattr(obj, key, default)
 
 
-def _validate_image_detections(detections, image_size):
+
+def make_full_field_detection(element, field, secret_type):
+    """Create a detection that redacts the entire matching field."""
+    return {
+        "element_id": str(get_value(element, "id", "")),
+        "field": field,
+        "type": secret_type,
+        "source": "custom_privacy_rule",
+        "span": None,
+        "bbox": get_value(element, "bbox"),
+    }
+
+
+def validate_image_detections(detections, image_size):
     """Reject malformed or out-of-bounds bounding boxes."""
     width, height = image_size
 
     for detection in detections:
-        raw_bbox = _get(detection, "bbox")
+        bbox = get_value(detection, "bbox")
 
-        # Missing bounding boxes are permitted for text-only detections.
-        if raw_bbox is None:
+        # Bounding boxes are optional for text-only detections.
+        if bbox is None:
             continue
 
-        if isinstance(raw_bbox, dict):
-            keys = ("x", "y", "w", "h")
-            if any(key not in raw_bbox for key in keys):
+        keys = ("x", "y", "w", "h")
+
+        if isinstance(bbox, dict):
+            if any(key not in bbox for key in keys):
                 raise ValueError(
                     "Sanitization failed: bounding box is missing coordinates."
                 )
-            values = tuple(raw_bbox[key] for key in keys)
+            values = [bbox[key] for key in keys]
+
+        elif all(hasattr(bbox, key) for key in keys):
+            values = [getattr(bbox, key) for key in keys]
+
         else:
             raise ValueError(
-                "Sanitization failed: bounding box must be a dictionary."
+                "Sanitization failed: invalid bounding box."
             )
 
         if any(
             isinstance(value, bool)
             or not isinstance(value, (int, float))
-            or not isfinite(value)
+            or not math.isfinite(value)
             for value in values
         ):
             raise ValueError(
-                "Sanitization failed: bounding box has invalid coordinates."
+                "Sanitization failed: bounding box coordinates must be finite numbers."
             )
 
         x, y, w, h = values
 
-        if w <= 0 or h <= 0:
+        if (
+            x < 0
+            or y < 0
+            or w <= 0
+            or h <= 0
+            or x + w > width
+            or y + h > height
+        ):
             raise ValueError(
-                "Sanitization failed: bounding box dimensions must be positive."
-            )
-
-        if x < 0 or y < 0 or x + w > width or y + h > height:
-            raise ValueError(
-                "Sanitization failed: bounding box extends outside the screenshot."
-            )
-
-
-def _apply_custom_rules(elements, detections, selectors, exclusions=None):
-    """
-    Apply custom privacy rules.
-
-    Exclusions affect custom rules only. They never remove detections
-    already supplied by the privacy detector.
-    """
-    exclusions = exclusions or []
-
-    for element in elements:
-        if not matches_selector(element, selectors):
-            continue
-
-        if matches_selector(element, exclusions):
-            continue
-
-        element_id = str(_get(element, "id", "") or "")
-        bbox = _get(element, "bbox")
-
-        fields = []
-        for field_name in ("text", "value", "label", "placeholder", "title"):
-            value = _get(element, field_name)
-            if isinstance(value, str) and value:
-                fields.append(field_name)
-
-        if not fields:
-            continue
-
-        # A matching sensitive element must not silently leave its
-        # corresponding screenshot region unprotected.
-        if bbox is None:
-            raise ValueError(
-                "Sanitization failed: a custom-rule match contains text "
-                "but has no bounding box for screenshot redaction."
-            )
-
-        for field_name in fields:
-            detections.append(
-                {
-                    "element_id": element_id,
-                    "field": field_name,
-                    "type": "SECRET",
-                    "span": None,
-                    "bbox": bbox,
-                    "source": "custom_privacy_rule",
-                }
+                "Sanitization failed: bounding box is invalid or out of bounds."
             )
 
 
 def sanitize(snapshot, detections, rules_path=None):
     """
-    Return a sanitized view of a captured webpage.
+    Sanitize a webpage snapshot before it is included in an AI request.
 
-    The input snapshot is not modified. Invalid screenshots and malformed
-    visual detection geometry cause sanitization to fail rather than
-    silently returning unsafe image data.
+    Returns:
+        SanitizedView containing the sanitized screenshot, elements,
+        screenshot hash, and a redaction/security report.
+
+    Raises:
+        ValueError: If the screenshot or bounding boxes are invalid.
     """
-    screenshot = _get(snapshot, "screenshot")
-    original_elements = _get(snapshot, "elements", [])
+    screenshot = get_value(snapshot, "screenshot")
+    original_elements = get_value(snapshot, "elements", [])
 
     if not isinstance(screenshot, bytes) or not screenshot:
         raise ValueError(
@@ -136,64 +120,76 @@ def sanitize(snapshot, detections, rules_path=None):
     if original_elements is None:
         original_elements = []
 
-    if not isinstance(original_elements, (list, tuple)):
-        raise ValueError(
-            "Sanitization failed: snapshot elements must be a list."
-        )
-
-    elements = deepcopy(list(original_elements))
-    all_detections = list(detections or [])
-
-    rules = load_rules(rules_path)
-
-    _apply_custom_rules(
-        elements,
-        all_detections,
-        rules["always_redact_selectors"],
-        rules["never_redact"],
-    )
-
-    # Record suspicious webpage instructions as untrusted content.
-    injection_findings = scan_page_elements(elements)
-
-    # Sanitize text fields on copied elements.
-    sanitized_elements, text_records = sanitize_elements(
-        elements,
-        all_detections,
-    )
-
-    # Validate that the screenshot can be decoded before processing.
+    # Validate the screenshot before processing it.
     try:
         with Image.open(BytesIO(screenshot)) as image:
-            image.load()
             image_size = image.size
+            image.verify()
     except Exception as exc:
         raise ValueError(
-            "Sanitization failed: screenshot cannot be decoded."
+            "Sanitization failed: screenshot is not a valid image."
         ) from exc
 
-    _validate_image_detections(all_detections, image_size)
+    # Preserve the caller's original elements.
+    elements = deepcopy(list(original_elements))
+    detections = list(detections or [])
 
-    sanitized_screenshot, image_records = redact_image(
-        screenshot,
-        all_detections,
+    # Load configured privacy rules.
+    rules = load_rules(rules_path)
+
+    # Apply mandatory custom privacy selectors.
+    for element in elements:
+        if matches_selector(
+            element,
+            rules["always_redact_selectors"],
+        ):
+            for field_name in ("text", "value", "label"):
+                value = get_value(element, field_name)
+
+                if isinstance(value, str) and value:
+                    detections.append(
+                        make_full_field_detection(
+                            element,
+                            field_name,
+                            "SECRET",
+                        )
+                    )
+
+    # Flag prompt injection before modifying page text.
+    injection_findings = scan_page_elements(elements)
+
+    # Validate bounding boxes before any image redaction.
+    validate_image_detections(detections, image_size)
+
+    # Sanitize sensitive text and field values.
+    sanitized_elements, text_report = sanitize_elements(
+        elements,
+        detections,
     )
 
+    # Redact sensitive image regions.
+    sanitized_screenshot, image_report = redact_image(
+        screenshot,
+        detections,
+    )
+
+    # Build a report without including original secret values.
     report = []
 
-    for record in text_records:
+    for record in text_report:
         report.append(
             {
                 "element_id": record.element_id,
                 "field": record.field,
-                "type": normalize_type(record.secret_type),
+                "type": record.secret_type,
                 "placeholder": record.placeholder,
                 "reason": record.reason,
             }
         )
 
-    report.extend(image_records)
+    report.extend(image_report)
 
+    # Record prompt-injection findings without copying suspicious text.
     for finding in injection_findings:
         report.append(
             {
@@ -206,11 +202,15 @@ def sanitize(snapshot, detections, rules_path=None):
             }
         )
 
+    # Hash the exact sanitized screenshot bytes.
     screenshot_hash = sha256(sanitized_screenshot).hexdigest()
 
+    url = get_value(snapshot, "url", "") or ""
+    title = get_value(snapshot, "title", "") or ""
+
     return SanitizedView(
-        url=_get(snapshot, "url", "") or "",
-        title=_get(snapshot, "title", "") or "",
+        url=url,
+        title=title,
         screenshot=sanitized_screenshot,
         elements=sanitized_elements,
         screenshot_sha256=screenshot_hash,
