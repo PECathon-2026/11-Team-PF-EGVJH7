@@ -1,12 +1,22 @@
+
 import base64
+import json
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 
 from contracts.models import Action
+from .prompts import SYSTEM_PROMPT
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def build_request(view, task, history, secret_names):
-    """
-    Build an AI request using only the sanitized webpage view.
-    """
+    """Build an AI request using only the sanitized webpage view."""
 
     elements = []
 
@@ -31,37 +41,56 @@ def build_request(view, task, history, secret_names):
 
 
 def call_llm(request):
-    """
-    Phase 1 mock AI: return an action to click the Pay button.
-    No real AI API is called in Phase 1.
-    """
+    """Use Gemini to generate one structured PrivacyLens action."""
 
-    for element in request["elements"]:
-        text = str(element.get("text", ""))
-        label = str(element.get("label") or "")
-        element_id = element.get("id")
-        tag = str(element.get("tag", "")).lower()
-        role = str(element.get("role") or "").lower()
-        element_type = str(element.get("type") or "").lower()
+    load_dotenv(ROOT / ".env")
 
-        button_text = f"{text} {label}".strip().lower()
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY is missing. Check your root .env file."
+        )
 
-        if (
-            element_id
-            and "pay" in button_text
-            and (
-                tag == "button"
-                or role == "button"
-                or element_type == "submit"
+    model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    client = genai.Client(api_key=api_key)
+
+    # Send only the sanitized page information and task.
+    safe_request = {
+        key: value
+        for key, value in request.items()
+        if key != "screenshot_b64"
+    }
+
+    contents = [
+        json.dumps(safe_request, ensure_ascii=False)
+    ]
+
+    screenshot_b64 = request.get("screenshot_b64")
+    if screenshot_b64:
+        contents.append(
+            types.Part.from_bytes(
+                data=base64.b64decode(screenshot_b64),
+                mime_type="image/png",
             )
-        ):
-            return Action(
-                type="click",
-                element_id=element_id,
-                reason="Phase 1 mock action: click the Pay button."
-            )
+        )
 
-    return Action(
-        type="done",
-        reason="Mock action stopped: no suitable Pay button was found."
+    response = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=types.GenerateContentConfig(
+    system_instruction=SYSTEM_PROMPT,
+    response_mime_type="application/json",
+    response_schema=Action,
+),
     )
+
+    if not response.text:
+        raise RuntimeError("Gemini returned an empty response.")
+
+    try:
+        parsed = json.loads(response.text)
+        return Action.model_validate(parsed)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(
+            "Gemini returned an invalid action."
+        ) from exc
