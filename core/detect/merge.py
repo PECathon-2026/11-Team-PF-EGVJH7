@@ -1,6 +1,12 @@
-﻿from contracts.models import Detection
+﻿import math
+from contracts.models import Detection
 
 _TYPE_PRIORITY = {"CARD": 3, "AADHAAR": 3, "PAN": 3, "PASSWORD": 3, "OTP": 3, "API_KEY": 3, "EMAIL": 2, "PHONE": 2, "IP": 2, "OTHER": 1, "FACE": 1, "PERSON": 1, "ADDRESS": 1}
+
+_RISK_WEIGHTS = {
+    "CARD": 10, "AADHAAR": 10, "PAN": 10, "PASSWORD": 10, "API_KEY": 10,
+    "EMAIL": 3, "PHONE": 3, "ADDRESS": 3, "PERSON": 2, "IP": 2
+}
 
 def merge_detections(dets: list[Detection]) -> list[Detection]:
     buckets = {}
@@ -30,4 +36,13 @@ def merge_detections(dets: list[Detection]) -> list[Detection]:
                     break
             if not overlap: kept.append(d)
         merged.extend(kept)
+
     return merged
+
+def calculate_mosaic_risk(merged_dets: list[Detection]) -> float:
+    if not merged_dets:
+        return 0.0
+    base_risk = sum(math.sqrt(_RISK_WEIGHTS.get(d.type, 1) * d.confidence) for d in merged_dets)
+    density = len(merged_dets)
+    density_penalty = 0.5 * math.exp(density / 5.0)
+    return round(base_risk + density_penalty, 2)
