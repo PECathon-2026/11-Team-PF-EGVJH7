@@ -1,0 +1,12 @@
+﻿pydantic
+pytest
+playwright
+pyyaml
+psutil
+pillow
+fastapi
+uvicorn
+httpx
+anthropic
+python-dotenv
+ruff
