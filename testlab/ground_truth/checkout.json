@@ -1,0 +1,6 @@
+﻿[
+  {"element_id_selector": "#email",   "type": "EMAIL",   "value": "test.user@example.com"},
+  {"element_id_selector": "#address", "type": "ADDRESS", "value": "42 MG Road, Bengaluru"},
+  {"element_id_selector": "#card",    "type": "CARD",    "value": "4111 1111 1111 1111"},
+  {"element_id_selector": "#cvv",     "type": "CARD",    "value": "123"}
+]
