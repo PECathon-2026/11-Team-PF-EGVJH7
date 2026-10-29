@@ -22,39 +22,99 @@ _KEYWORD_MAP = [
     (("api", "token", "secret", "key"), "API_KEY"),
 ]
 
-
 def structural_hits(el: Element) -> list[Detection]:
     """Identify sensitive fields using DOM metadata and labels."""
     out = []
-    
-    # Helper to give structural hits a span so P3's image drawer catches them
+
+    # Give structural hits a span so the image drawer can identify them.
     span = (0, len(el.value)) if el.value else None
-    
-    if el.type == "password":
-        out.append(Detection(type="PASSWORD", source="dom", element_id=el.id, field="value", span=span, bbox=el.bbox))
-    ac = (el.attrs or {}).get("autocomplete", "").strip().lower()
+
+    element_type = (el.type or "").strip().lower()
+    attrs = el.attrs or {}
+
+    if element_type == "password":
+        out.append(
+            Detection(
+                type="PASSWORD",
+                source="dom",
+                element_id=el.id,
+                field="value",
+                span=span,
+                bbox=el.bbox,
+            )
+        )
+
+    ac = attrs.get("autocomplete", "").strip().lower()
+
     if ac in _AUTOCOMPLETE_MAP:
-        out.append(Detection(type=_AUTOCOMPLETE_MAP[ac], source="dom", element_id=el.id, field="value", span=span, bbox=el.bbox))
-    
-    hay = " ".join(filter(None, [el.name, el.label, el.id, (el.attrs or {}).get("placeholder", "")])).lower()
+        out.append(
+            Detection(
+                type=_AUTOCOMPLETE_MAP[ac],
+                source="dom",
+                element_id=el.id,
+                field="value",
+                span=span,
+                bbox=el.bbox,
+            )
+        )
+
+    hay = " ".join(
+        filter(
+            None,
+            [
+                el.name,
+                el.label,
+                el.id,
+                attrs.get("placeholder", ""),
+            ],
+        )
+    ).lower()
+
+    # Define this before using it in the ADDRESS check.
+    is_email_field = (
+        element_type == "email"
+        or ac == "email"
+        or "email" in hay
+    )
+
     for words, dtype in _KEYWORD_MAP:
-        if any(w in hay for w in words):
-            out.append(Detection(type=dtype, source="dom", element_id=el.id, field="value", span=span, bbox=el.bbox))
+        if any(word in hay for word in words):
+            out.append(
+                Detection(
+                    type=dtype,
+                    source="dom",
+                    element_id=el.id,
+                    field="value",
+                    span=span,
+                    bbox=el.bbox,
+                )
+            )
             break
 
+    # Detect email fields separately to avoid classifying
+    # "Email Address" as a postal address.
+    if is_email_field:
+        out.append(
+            Detection(
+                type="EMAIL",
+                source="dom",
+                element_id=el.id,
+                field="value",
+                span=span,
+                bbox=el.bbox,
+            )
+        )
+
     # Only classify postal-address fields as ADDRESS.
-    # "Email Address" must not be treated as a postal address.
-    if (
-        not is_email_field
-        and "address" in hay
-    ):
+    if not is_email_field and "address" in hay:
         out.append(
             Detection(
                 type="ADDRESS",
                 source="dom",
                 element_id=el.id,
                 field="value",
-                span=None,
+                span=span,
+                bbox=el.bbox,
             )
         )
 
