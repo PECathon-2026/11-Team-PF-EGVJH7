@@ -30,9 +30,8 @@ def set_value(obj, key, value):
 
 def replace_spans(text, detections, element_id, field):
     """
-    Replace sensitive spans using offsets from the original text.
-    If a matching detection has an invalid or missing span,
-    redact the entire field rather than risk exposing a secret.
+    Replace detected sensitive spans with privacy-safe placeholders.
+    Invalid spans cause the entire field to be redacted.
     """
     matching = []
 
@@ -91,12 +90,14 @@ def replace_spans(text, detections, element_id, field):
             )
             return placeholder, [record]
 
-        spans.append((start, end, secret_type, placeholder, reason))
+        spans.append(
+            (start, end, secret_type, placeholder, reason)
+        )
 
-    # Sort spans by their original text positions.
+    # Sort spans by their original positions.
     spans.sort(key=lambda item: (item[0], item[1]))
 
-    # Merge overlapping spans to avoid corrupting the text.
+    # Merge overlapping spans.
     merged = []
 
     for start, end, secret_type, placeholder, reason in spans:
@@ -124,7 +125,7 @@ def replace_spans(text, detections, element_id, field):
     result = text
     report = []
 
-    # Work backwards so earlier character offsets remain valid.
+    # Replace from right to left to preserve the original offsets.
     for start, end, types, placeholders, reasons in reversed(merged):
         replacement = " ".join(dict.fromkeys(placeholders))
         result = result[:start] + replacement + result[end:]
@@ -170,8 +171,8 @@ def sanitize_elements(elements, detections):
                 set_value(element, field, replacement)
                 report.extend(records)
 
-        # Password and OTP values must be redacted based on field type,
-        # even if the detector did not produce a text span.
+        # Password and OTP values must be protected even when
+        # the detector did not identify a sensitive span.
         element_type = str(
             get_value(element, "type", "") or ""
         ).lower()
