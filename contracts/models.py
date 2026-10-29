@@ -1,4 +1,4 @@
-﻿from typing import Literal, Optional
+from typing import Literal, Optional
 from pydantic import BaseModel
 
 DetType = Literal["CARD","AADHAAR","PAN","EMAIL","PHONE","PASSWORD","OTP", "API_KEY","IP","FACE","PERSON","ADDRESS","OTHER"]

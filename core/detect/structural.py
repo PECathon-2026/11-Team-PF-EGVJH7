@@ -1,7 +1,15 @@
 ﻿from contracts.models import Element, Detection
 
 _AUTOCOMPLETE_MAP = {"cc-number": "CARD", "cc-csc": "CARD", "cc-exp": "CARD", "one-time-code": "OTP", "current-password": "PASSWORD", "new-password": "PASSWORD", "email": "EMAIL", "tel": "PHONE"}
-_KEYWORD_MAP = [(("card", "cvv", "cvc", "creditcard"), "CARD"), (("aadhaar", "aadhar", "uid"), "AADHAAR"), (("pan",), "PAN"), (("otp", "2fa", "verification"), "OTP"), (("password", "passwd", "pwd"), "PASSWORD"), (("api", "token", "secret", "key"), "API_KEY")]
+_KEYWORD_MAP = [
+    (("card", "cvv", "cvc", "creditcard"), "CARD"),
+    (("aadhaar", "aadhar", "uid"), "AADHAAR"),
+    (("pan",), "PAN"),
+    (("otp", "2fa", "verification"), "OTP"),
+    (("password", "passwd", "pwd"), "PASSWORD"),
+    (("api", "token", "secret", "key"), "API_KEY"),
+    (("address",), "ADDRESS")
+]
 
 def structural_hits(el: Element) -> list[Detection]:
     out = []

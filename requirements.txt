@@ -1,4 +1,4 @@
-﻿pydantic
+pydantic
 pytest
 playwright
 pyyaml
@@ -10,3 +10,11 @@ httpx
 anthropic
 python-dotenv
 ruff
+
+playwright
+pydantic
+PyYAML
+Pillow
+psutil
+pytest
+python-dotenv
