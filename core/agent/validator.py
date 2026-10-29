@@ -1,4 +1,6 @@
+
 from core.config import load_config
+from core.agent.approval import needs_approval
 
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -71,19 +73,25 @@ def _element_compatible(action, element):
         return (
             tag in {"button", "a"}
             or role in {"button", "link", "checkbox", "radio", "tab"}
-            or (tag == "input" and input_type in {
-                "button", "submit", "reset", "checkbox", "radio"
-            })
+            or (
+                tag == "input"
+                and input_type in {
+                    "button", "submit", "reset", "checkbox", "radio"
+                }
+            )
         )
 
     if action.type == "type":
         return (
-            (tag == "input" and input_type not in {
-                "button", "submit", "reset", "checkbox", "radio",
-                "file", "hidden", "image"
-            })
+            (
+                tag == "input"
+                and input_type not in {
+                    "button", "submit", "reset", "checkbox",
+                    "radio", "file", "hidden", "image"
+                }
+            )
             or tag == "textarea"
-            or attrs.get("contenteditable", "").lower() == "true"
+            or str(attrs.get("contenteditable", "")).lower() == "true"
         )
 
     if action.type == "select":
@@ -94,31 +102,6 @@ def _element_compatible(action, element):
 
     return False
 
-
-def _needs_approval(action, element):
-    """Flag potentially consequential submit or payment actions."""
-    if action.type != "click" or element is None:
-        return False
-
-    details = " ".join([
-        element.name or "",
-        element.label or "",
-        element.text or "",
-        element.attrs.get("value", ""),
-        element.attrs.get("type", ""),
-    ]).lower()
-
-    keywords = (
-        "pay", "payment", "purchase", "buy now",
-        "place order", "submit", "confirm order",
-        "checkout", "transfer",
-    )
-
-    return any(keyword in details for keyword in keywords)
-
-def needs_approval(action, element):
-    """Public interface for checking whether an action needs approval."""
-    return _needs_approval(action, element)
 
 def validate(
     action: Action,
@@ -225,7 +208,9 @@ def validate(
         elif action.text is None:
             return ValidationResult(
                 ok=False,
-                reasons=["Type action requires text or a secret reference."],
+                reasons=[
+                    "Type action requires text or a secret reference."
+                ],
             )
 
     if action.type == "select" and action.text is None:
@@ -236,6 +221,6 @@ def validate(
 
     return ValidationResult(
         ok=True,
-        needs_approval=_needs_approval(action, element),
+        needs_approval=needs_approval(action, element),
         reasons=reasons,
     )

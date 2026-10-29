@@ -37,6 +37,29 @@ def _safe_action_summary(action) -> str:
 
     return "\n".join(lines)
 
+def needs_approval(action, element) -> bool:
+    """Check whether an action needs explicit human approval."""
+    if action.type != "click" or element is None:
+        return False
+
+    attrs = element.attrs or {}
+
+    details = " ".join([
+        element.name or "",
+        element.label or "",
+        element.text or "",
+        str(attrs.get("value", "")),
+        str(attrs.get("type", "")),
+    ]).lower()
+
+    keywords = (
+        "pay", "payment", "purchase", "buy now",
+        "place order", "submit", "confirm order",
+        "checkout", "transfer",
+    )
+
+    return any(keyword in details for keyword in keywords)
+
 
 def request_approval(action) -> bool:
     """Require an explicit YES before a sensitive action can execute."""
