@@ -1,9 +1,21 @@
 ﻿from contracts.models import PageSnapshot, Detection
-from .patterns import find_cards, find_aadhaar, find_pan, find_email, find_phone, find_otp
+from .patterns import (
+    find_cards, find_aadhaar, find_pan, find_email, find_phone, find_otp,
+    find_api_keys, find_ips
+)
 from .structural import structural_hits
 from .merge import merge_detections
 
-_FINDERS = [("CARD", find_cards), ("AADHAAR", find_aadhaar), ("PAN", find_pan), ("EMAIL", find_email), ("PHONE", find_phone), ("OTP", find_otp)]
+_FINDERS = [
+    ("CARD", find_cards),
+    ("AADHAAR", find_aadhaar),
+    ("PAN", find_pan),
+    ("EMAIL", find_email),
+    ("PHONE", find_phone),
+    ("OTP", find_otp),
+    ("API_KEY", find_api_keys),
+    ("IP", find_ips)
+]
 
 def scan_text(text: str) -> list[Detection]:
     out = []

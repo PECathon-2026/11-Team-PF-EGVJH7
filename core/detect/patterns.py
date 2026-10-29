@@ -37,3 +37,12 @@ _OTP_CONTEXT = re.compile(r"(otp|one[-\s]?time|verification|2fa|code)", re.I)
 def find_otp(text: str):
     if not _OTP_CONTEXT.search(text): return []
     return [(m.start(), m.end(), m.group(0)) for m in _OTP_DIGITS_RE.finditer(text)]
+
+# --- Phase 2 Additions: API Keys, JWT, IPs ---
+_API_KEY_RE = re.compile(r"\b(sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b")
+def find_api_keys(text: str):
+    return [(m.start(), m.end(), m.group(0)) for m in _API_KEY_RE.finditer(text)]
+
+_IP_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b")
+def find_ips(text: str):
+    return [(m.start(), m.end(), m.group(0)) for m in _IP_RE.finditer(text)]

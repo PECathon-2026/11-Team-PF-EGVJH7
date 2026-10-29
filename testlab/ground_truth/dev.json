@@ -1,0 +1,7 @@
+﻿[
+  {"element_id_selector": "#openai", "type": "API_KEY", "value": "sk-proj-abc123def456ghi789jkl012"},
+  {"element_id_selector": "#aws",    "type": "API_KEY", "value": "AKIAIOSFODNN7EXAMPLE"},
+  {"element_id_selector": "#github", "type": "API_KEY", "value": "ghp_1234567890abcdefghijABCDEFGHIJ123456"},
+  {"element_id_selector": "#jwt",    "type": "API_KEY", "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.do_not_share_this_token"},
+  {"element_id_selector": "#ip",     "type": "IP",      "value": "192.168.1.105"}
+]

@@ -1,0 +1,5 @@
+﻿[
+  {"element_id_selector": "#user-email", "type": "EMAIL", "value": "john.doe@example.com"},
+  {"element_id_selector": "#user-phone", "type": "PHONE", "value": "+91 9876543210"},
+  {"element_id_selector": "#message",    "type": "PHONE", "value": "9876543210"}
+]
