@@ -1,72 +1,178 @@
-"""Fail-closed validation of outgoing model payloads."""
+"""Fail-closed privacy firewall for outgoing payloads."""
 
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from contracts.models import GuardResult
+
+@dataclass
+class GuardResult:
+    """Result returned by privacy guard validation."""
+
+    ok: bool
+    reasons: list[str] = field(default_factory=list)
+    leaks: list[str] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+    @property
+    def allowed(self) -> bool:
+        """Compatibility with code using the older result interface."""
+        return self.ok
 
 
-def _extract_strings(value: Any):
+# Backward-compatible name.
+EgressResult = GuardResult
+
+
+def extract_strings(value: Any) -> list[str]:
+    """Extract strings recursively; reject uninspectable values."""
+
     if isinstance(value, str):
-        yield value
-    elif isinstance(value, bytes):
-        try:
-            yield value.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError("Uninspectable binary payload") from exc
-    elif isinstance(value, Mapping):
+        return [value]
+
+    if isinstance(value, Mapping):
+        result = []
         for key, item in value.items():
-            yield from _extract_strings(key)
-            yield from _extract_strings(item)
-    elif isinstance(value, (list, tuple, set)):
+            result.extend(extract_strings(key))
+            result.extend(extract_strings(item))
+        return result
+
+    if isinstance(value, (list, tuple, set, frozenset)):
+        result = []
         for item in value:
-            yield from _extract_strings(item)
-    elif value is None or isinstance(value, (bool, int, float)):
-        return
-    else:
-        raise ValueError("Unsupported payload type")
+            result.extend(extract_strings(item))
+        return result
+
+    if value is None or isinstance(value, (bool, int, float)):
+        return []
+
+    raise ValueError(
+        f"Unsupported payload value type: {type(value).__name__}"
+    )
+
+
+# Backward-compatible helper.
+_extract_strings = extract_strings
+
+
+def _collect_inventory(values: Iterable[str]) -> list[str]:
+    """Validate the inventory of protected values."""
+
+    if values is None:
+        raise ValueError("Inventory cannot be None.")
+
+    try:
+        inventory = list(values)
+    except Exception as exc:
+        raise ValueError("Inventory could not be inspected.") from exc
+
+    if not inventory:
+        raise ValueError("Inventory is empty.")
+
+    if any(not isinstance(value, str) or not value for value in inventory):
+        raise ValueError("Inventory contains invalid entries.")
+
+    return inventory
+
+
+def _inspect_payload(payload: Any) -> list[str]:
+    """Inspect the complete payload or reject it."""
+
+    try:
+        return extract_strings(payload)
+    except Exception as exc:
+        raise ValueError("Payload could not be inspected.") from exc
+
+
+def _find_leaks(
+    strings: list[str],
+    protected_values: list[str],
+) -> list[str]:
+    """Return protected values found anywhere in outgoing strings."""
+
+    return sorted({
+        protected
+        for protected in protected_values
+        if any(protected in text for text in strings)
+    })
 
 
 def validate_no_leakage(
     payload: Any,
-    secrets: Iterable[str],
+    secrets: Iterable[str] = (),
 ) -> GuardResult:
-    if payload is None:
-        return GuardResult(ok=False, reasons=["Outgoing payload is missing."])
-
-    if secrets is None or isinstance(secrets, (str, bytes, Mapping)):
-        return GuardResult(ok=False, reasons=["Secret inventory is invalid."])
+    """Reject leaks and fail closed for empty inventories or invalid data."""
 
     try:
-        secret_values = list(secrets)
-    except (TypeError, ValueError):
-        return GuardResult(ok=False, reasons=["Secret inventory is invalid."])
+        secret_values = _collect_inventory(secrets)
+        strings = _inspect_payload(payload)
+        leaks = _find_leaks(strings, secret_values)
 
-    if not secret_values:
-        return GuardResult(
-            ok=False,
-            reasons=["Secret inventory is empty; leakage cannot be verified."],
-        )
-
-    if any(not isinstance(secret, str) or not secret for secret in secret_values):
-        return GuardResult(
-            ok=False,
-            reasons=["Secret inventory contains an invalid entry."],
-        )
-
-    try:
-        payload_strings = list(_extract_strings(payload))
-    except (TypeError, ValueError):
-        return GuardResult(
-            ok=False,
-            reasons=["Outgoing payload could not be fully inspected."],
-        )
-
-    for secret in secret_values:
-        if any(secret in text for text in payload_strings):
+        if leaks:
             return GuardResult(
                 ok=False,
-                reasons=["Outgoing payload contains a protected original value."],
+                reasons=["Protected original value detected."],
+                leaks=leaks,
             )
 
-    return GuardResult(ok=True, reasons=[])
+        return GuardResult(ok=True)
+
+    except Exception as exc:
+        return GuardResult(
+            ok=False,
+            reasons=[str(exc)],
+        )
+
+
+def validate_payload(
+    payload: Any,
+    secrets: Iterable[str] = (),
+    canaries: Iterable[str] = (),
+) -> GuardResult:
+    """Check outgoing data for protected values and canaries."""
+
+    try:
+        if secrets is None or canaries is None:
+            raise ValueError("Secret and canary inventories cannot be None.")
+
+        secret_values = list(secrets)
+        canary_values = list(canaries)
+
+        # Validate each provided inventory and require at least one
+        # protected value across the combined inventories.
+        combined = secret_values + canary_values
+        protected_values = _collect_inventory(combined)
+
+        strings = _inspect_payload(payload)
+        leaks = _find_leaks(strings, protected_values)
+
+        if leaks:
+            return GuardResult(
+                ok=False,
+                reasons=["Privacy firewall blocked outgoing payload."],
+                leaks=leaks,
+            )
+
+        return GuardResult(ok=True)
+
+    except Exception as exc:
+        return GuardResult(
+            ok=False,
+            reasons=[str(exc)],
+        )
+
+
+def validate_outgoing(
+    payload: Any,
+    secrets: Iterable[str] = (),
+    canaries: Iterable[str] = (),
+) -> GuardResult:
+    """Final fail-closed validation before data leaves the application."""
+
+    return validate_payload(
+        payload=payload,
+        secrets=secrets,
+        canaries=canaries,
+    )

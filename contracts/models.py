@@ -1,7 +1,6 @@
+
 from typing import Literal, Optional, Any
-
 from pydantic import BaseModel, Field, ConfigDict
-
 
 DetType = Literal[
     "CARD", "AADHAAR", "PAN", "EMAIL", "PHONE", "PASSWORD", "OTP",
@@ -27,19 +26,19 @@ class Element(BaseModel):
     label: Optional[str] = None
     text: str = ""
     value: str = ""
+    placeholder: str = ""
+    title: str = ""
     bbox: Optional[BBox] = None
     attrs: dict[str, Any] = Field(default_factory=dict)
     attributes: dict[str, Any] = Field(default_factory=dict)
 
     def model_post_init(self, __context: Any) -> None:
-        # Keep both attribute names compatible with existing modules.
         if self.attributes and not self.attrs:
             self.attrs = dict(self.attributes)
         elif self.attrs and not self.attributes:
             self.attributes = dict(self.attrs)
 
 
-# Compatibility with sanitizer tests and older modules.
 PageElement = Element
 
 
