@@ -14,7 +14,7 @@ def get_value(obj, key, default=None):
 
 
 def get_bbox(detection):
-    """Extract a bounding box, rejecting malformed supplied geometry."""
+    """Extract finite, positive-area geometry without unsafe conversions."""
     bbox = get_value(detection, "bbox")
 
     if bbox is None:
@@ -37,12 +37,14 @@ def get_bbox(detection):
         or not math.isfinite(value)
         for value in values
     ):
-        raise ValueError("Bounding box contains invalid coordinates.")
+        raise ValueError("Bounding box contains invalid or non-finite coordinates.")
 
     x, y, w, h = values
 
     if w <= 0 or h <= 0:
         raise ValueError("Bounding box dimensions must be positive.")
+    if not math.isfinite(x + w) or not math.isfinite(y + h):
+        raise ValueError("Bounding box edges exceed finite coordinate range.")
 
     return x, y, w, h
 
@@ -68,25 +70,33 @@ def redact_image(image_bytes, detections):
     report = []
 
     for detection in detections or []:
-        bbox = get_bbox(detection)
+        element_id = str(get_value(detection, "element_id", "") or "")
+        dtype = str(get_value(detection, "type", "SECRET"))
+        try:
+            bbox = get_bbox(detection)
+        except (TypeError, ValueError, OverflowError) as exc:
+            report.append({"element_id": element_id, "type": dtype,
+                           "status": "failed", "reason": str(exc)})
+            continue
 
         if bbox is None:
+            report.append({"element_id": element_id, "type": dtype,
+                           "status": "skipped", "reason": "No image bounding box is available."})
             continue
 
         x, y, w, h = bbox
         import math
 
-        if x < 0 or y < 0 or x + w > image_width or y + h > image_height:
-            raise ValueError(
-                "Bounding box extends outside the screenshot."
-            )
-
-        left = max(0, int(x))
-        top = max(0, int(y))
+        # Boxes are viewport-relative CSS pixels; Playwright screenshots use
+        # CSS scale. Clip partial intersections, but never invent offscreen pixels.
+        left = max(0, math.floor(x))
+        top = max(0, math.floor(y))
         right = min(image_width - 1, math.ceil(x + w) - 1)
         bottom = min(image_height - 1, math.ceil(y + h) - 1)
 
         if right < left or bottom < top:
+            report.append({"element_id": element_id, "type": dtype,
+                           "status": "skipped", "reason": "Bounding box is outside the captured screenshot."})
             continue
 
         # Solid black: no blur or transparency.
@@ -96,8 +106,9 @@ def redact_image(image_bytes, detections):
         )
 
         report.append({
-            "element_id": str(get_value(detection, "element_id", "")),
-            "type": str(get_value(detection, "type", "SECRET")),
+            "element_id": element_id,
+            "type": dtype,
+            "status": "redacted",
             "bbox": {
                 "x": left,
                 "y": top,

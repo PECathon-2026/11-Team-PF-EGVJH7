@@ -23,7 +23,7 @@ def detect(snapshot: PageSnapshot) -> list[Detection]:
     raw = []
     for el in snapshot.elements:
         raw.extend(structural_hits(el))
-        for field in ("text", "value", "label"):
+        for field in ("text", "value", "label", "placeholder"):
             content = getattr(el, field, "") or ""
             if not content: continue
             for dtype, fn in _FINDERS:

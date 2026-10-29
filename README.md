@@ -1,30 +1,92 @@
-# 11-Team-PF-EGVJH7
-## P2: The Detective (Sensitive Information Detection)
+# PrivacyLens
 
-Our detection engine uses a **Defense-in-Depth** approach to ensure high recall without sacrificing precision. It combines four distinct methods:
+PrivacyLens is a local browser privacy prototype. It snapshots a page, detects selected sensitive values, sanitizes DOM fields and screenshot regions, and can pass only the sanitized view to a bounded mock agent workflow.
 
-1. **Regex Patterns:** We scan for structural patterns of known PII (Emails, PAN, Phone numbers, API keys like \sk-\ or \AKIA\, JWTs, and IPv4 addresses).
-2. **Mathematical Validators:** To avoid false positives on random numbers, we use strict algorithmic validation:
-   - **Luhn Algorithm:** Used for credit/debit cards (13–19 digits). Validates the checksum using modular arithmetic.
-   - **Verhoeff Algorithm:** Used for 12-digit Aadhaar numbers. Utilizes the dihedral group D5 to catch all single-digit errors and adjacent transpositions.
-3. **DOM Structural Rules:** We inspect HTML attributes to catch secrets that regex might miss. We flag \	ype="password"\, \utocomplete="cc-number"\ or \one-time-code\, and keyword hints in \
-ame\/\label\ attributes (e.g., "cvv", "otp", "api_key").
-4. **Merge & Deduplication:** Overlapping detections from different sources are merged. The engine prioritizes specific types (e.g., CARD over OTHER) and increases confidence when multiple independent methods flag the same element.
+It is a research and development project, not a complete privacy filter or production browser agent. Detection is not exhaustive; a clean report does not prove that a page contains no sensitive information.
 
-### Evaluation Results (Phase 3 Gate)
-We evaluated our detection engine against a synthetic test lab of 5 scenarios (Checkout, Login, Developer Settings, Support Chat, Video Call). 
-The evaluation script (\evals/eval_detection.py\) compares our output against ground-truth JSON files using TP, FP, and FN metrics.
+## Architecture
 
-| Scenario | Recall | Precision |
-| :--- | :--- | :--- |
-| **Checkout** | 1.0 (100%) | 1.0 (100%) |
-| **Login** | 1.0 (100%) | 1.0 (100%) |
-| **Dev Settings** | 1.0 (100%) | 1.0 (100%) |
-| **Support Chat**| 1.0 (100%) | 1.0 (100%) |
-| **Video Call** | 1.0 (100%) | 1.0 (100%) |
+- `core/browser/snapshot.py` captures interactive controls and common visible text regions. Coordinates are viewport-relative CSS pixels. The screenshot is viewport-sized at Playwright CSS scale; device-pixel ratio is recorded for diagnostics.
+- `core/detect/` combines regex checks, checksum validators, and DOM field metadata. Current implemented patterns include email, phone, payment-card candidates, Aadhaar, PAN, OTP, API-key formats, and IPv4.
+- `core/sanitize/` applies selector rules, replaces detected DOM spans, scans for prompt-injection patterns, and draws opaque image redactions. Its report distinguishes redacted, skipped, and failed image detections.
+- `core/guard/` includes an outbound canary check. A workflow is blocked if a detected source value remains in the agent request or image redaction is unresolved.
+- `core/agent/llm.py` builds a restricted request from sanitized fields and implements a deterministic mock agent. It does not call an external model.
+- `core/browser/executor.py` checks snapshot identity and target state, restricts navigation to HTTP(S), blocks password/secret-reference entry, blocks form submissions and script-backed controls, and allows only policy-checked links to be clicked.
+- `core/orchestrator.py` owns Chromium for the CLI. `run_workflow()` can also be called with a page whose browser lifecycle is owned by the caller.
 
-*(Note: The address field in the checkout page is detected via structural keyword matching, and the CVV is flagged as a CARD, ensuring the AI never sees sensitive financial data).*
+## Windows setup
 
+Use Python 3.10 or newer. From PowerShell in this directory:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+If PowerShell blocks activation, run `Set-ExecutionPolicy -Scope Process Bypass` in that terminal, then activate the environment.
+
+## Configuration
+
+Mock mode needs no API key or `.env` file. Optional environment settings:
+
+| Variable | Default | Allowed range |
+| --- | ---: | ---: |
+| `PRIVACYLENS_START_URL` | `http://127.0.0.1:8000/checkout.html` | HTTP or HTTPS URL without embedded credentials |
+| `PRIVACYLENS_MAX_ACTIONS` | `5` | 1–10 |
+| `PRIVACYLENS_ACTION_TIMEOUT_MS` | `5000` | 1–30000 |
+
+The CLI also accepts `--url`, `--max-actions`, and `--timeout-ms`. Invalid settings fail with a non-sensitive configuration error.
+
+## Run the mock workflow
+
+Start the synthetic local fixture server in one PowerShell window:
+
+```powershell
+python -m http.server 8000 --directory testlab/pages
+```
+
+In another window, from the repository root:
+
+```powershell
+python -m core.orchestrator --mock-llm --url http://127.0.0.1:8000/checkout.html --task "Review the local checkout page safely"
+```
+
+The mock agent performs one harmless scroll and then terminates. The workflow emits a JSON summary, not page values or exception details. A nonzero exit code indicates a blocked or failed workflow. If the sanitizer cannot establish complete screenshot redaction for its detections, the agent is not called.
+
+## Tests
+
+```powershell
+python -m pytest tests/ -v
+```
+
+The suite uses synthetic data and local Playwright pages; it does not access an external site. Browser installation is required for orchestrator tests.
+
+## Real LLM status
+
+Real LLM mode is **not implemented**. The orchestrator returns a clear error if mock mode is not selected. There is no provider adapter, API-key configuration, or real-model workflow to document as working. The `SYSTEM_PROMPT` is preparatory text only and is not currently sent to a provider. No API credentials are required by the mock workflow.
+
+## Safeguards and limitations
+
+- Only selected sanitized element fields are put into the agent request; raw attributes, element `name` values, and all URL data (including the hostname) are omitted.
+- Detected source substrings are checked against outbound request fields. Recognizable single-token credentials in the task are replaced with a fixed marker; ambiguous credential-bearing task text fails closed. Other detected PII remaining in task text is blocked without including it in the error.
+- Sanitization failures and incomplete image-redaction reports stop the agent loop.
+- The executor rejects stale or changed targets, password entry, secret references, form submissions, arbitrary script-backed control clicks, and invalid navigation schemes. No approval mechanism exists, so consequential actions remain blocked.
+- Screenshot capture is viewport-only. An offscreen or hidden detection is sanitized in the DOM view but cannot be visually covered in pixels that were not captured; the report marks this unresolved.
+- The snapshot captures interactive elements and common visible text containers (`p`, headings, list items, blockquotes, SVG, and `role=img`). It does not cover every possible text node or arbitrary data attribute.
+- Cross-origin iframe contents and closed shadow roots are not supported. Open shadow DOM and dynamic-page behavior are subject to Playwright locator behavior and have not received comprehensive coverage.
+- Detection is heuristic and does not currently implement OCR, NER, face detection, or broad semantic identification. Prompt-injection scanning flags selected patterns; webpage content remains untrusted.
+- The egress canary check can only verify values that the detector found. It cannot guarantee that unknown sensitive content is absent.
+- The configured timeout is applied to initial navigation, browser actions, screenshot capture, and Playwright operations honoring the page default. Synchronous DOM evaluation and the overall workflow do not have a guaranteed global wall-clock deadline.
+- `core/browser/vault.py` and `core/agent/approval.py` remain unimplemented; secret restoration and user-approved consequential actions are unavailable.
+
+## Implemented versus future work
+
+Implemented: local snapshot, current regex/DOM detection, text and image sanitization, redaction status reporting, egress canary checks, safe mock workflow, action validation, and restricted execution.
+
+Future work: real provider integration, vault-backed secret references, explicit approval UX, broader page-content coverage, OCR/semantic detectors, and expanded browser-context testing. These capabilities must be added with privacy and action-safety tests before they are described as supported.
 
 ## P2: The Detective (Sensitive Detection & Synthetic Engine)
 

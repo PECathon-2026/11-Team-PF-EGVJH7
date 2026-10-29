@@ -176,3 +176,29 @@ def validate_outgoing(
         secrets=secrets,
         canaries=canaries,
     )
+"""Fail-closed guard for context sent to an agent."""
+
+from collections.abc import Mapping, Sequence
+
+
+class EgressBlocked(RuntimeError):
+    """Raised without including any sensitive source content."""
+
+
+def _strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for nested in value.values():
+            yield from _strings(nested)
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        for nested in value:
+            yield from _strings(nested)
+
+
+def assert_no_sensitive_values(payload, canaries: list[str]) -> None:
+    outgoing = tuple(_strings(payload))
+    if any(secret in text for secret in canaries for text in outgoing):
+        raise EgressBlocked(
+            "Agent context contains detected sensitive content; transmission blocked."
+        )

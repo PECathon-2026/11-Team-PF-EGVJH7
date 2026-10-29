@@ -24,6 +24,7 @@ class Element(BaseModel):
     type: Optional[str] = None
     name: Optional[str] = None
     label: Optional[str] = None
+    placeholder: str = ""
     text: str = ""
     value: str = ""
     placeholder: str = ""
@@ -47,6 +48,10 @@ class PageSnapshot(BaseModel):
     title: str = ""
     screenshot: bytes
     elements: list[Element] = Field(default_factory=list)
+    # take_snapshot captures a viewport screenshot at Playwright's CSS scale.
+    viewport_size: Optional[tuple[int, int]] = None
+    device_pixel_ratio: Optional[float] = None
+    snapshot_id: Optional[str] = None
 
 
 class Detection(BaseModel):

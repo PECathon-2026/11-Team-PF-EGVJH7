@@ -11,10 +11,13 @@ def build_request(view, task, history, secret_names):
     elements = []
 
     for element in view.elements:
-        if hasattr(element, "model_dump"):
-            elements.append(element.model_dump())
-        else:
-            elements.append(element.dict())
+        data = element.model_dump() if hasattr(element, "model_dump") else element.dict()
+        # Attribute names and the page URL can contain user-specific data.
+        # Neither is needed by the current mock agent, so omit them entirely.
+        elements.append({key: data.get(key) for key in (
+            "id", "tag", "role", "type", "label", "placeholder",
+            "text", "value", "bbox",
+        )})
 
     screenshot_b64 = base64.b64encode(
         view.screenshot
@@ -22,7 +25,6 @@ def build_request(view, task, history, secret_names):
 
     return {
         "task": task,
-        "url": view.url,
         "elements": elements,
         "screenshot_b64": screenshot_b64,
         "history": history,
@@ -31,37 +33,12 @@ def build_request(view, task, history, secret_names):
 
 
 def call_llm(request):
-    """
-    Phase 1 mock AI: return an action to click the Pay button.
-    No real AI API is called in Phase 1.
-    """
+    """Return a deterministic, harmless mock action; no provider is called."""
 
-    for element in request["elements"]:
-        text = str(element.get("text", ""))
-        label = str(element.get("label") or "")
-        element_id = element.get("id")
-        tag = str(element.get("tag", "")).lower()
-        role = str(element.get("role") or "").lower()
-        element_type = str(element.get("type") or "").lower()
-
-        button_text = f"{text} {label}".strip().lower()
-
-        if (
-            element_id
-            and "pay" in button_text
-            and (
-                tag == "button"
-                or role == "button"
-                or element_type == "submit"
-            )
-        ):
-            return Action(
-                type="click",
-                element_id=element_id,
-                reason="Phase 1 mock action: click the Pay button."
-            )
+    if not request.get("history"):
+        return Action(type="scroll", reason="Mock workflow performs one harmless scroll.")
 
     return Action(
         type="done",
-        reason="Mock action stopped: no suitable Pay button was found."
+        reason="Mock workflow reached its safe termination condition."
     )

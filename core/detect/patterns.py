@@ -28,9 +28,24 @@ _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 def find_email(text: str):
     return [(m.start(), m.end(), m.group(0)) for m in _EMAIL_RE.finditer(text)]
 
-_PHONE_RE = re.compile(r"(?:\+91[-\s]?)?[6-9]\d{9}\b")
+_PHONE_RE = re.compile(
+    r"(?<!\w)(?:\+\d{1,3}[\s().-]*)?(?:\(?\d{2,4}\)?[\s().-]*)?"
+    r"\d{3,4}[\s().-]*\d{3,4}(?![\w\s().-]*\d)"
+)
 def find_phone(text: str):
-    return [(m.start(), m.end(), m.group(0)) for m in _PHONE_RE.finditer(text)]
+    out = []
+    for m in _PHONE_RE.finditer(text):
+        if re.search(r"\d[\s().-]*$", text[:m.start()]):
+            continue
+        if re.match(r"^[\s().-]*\d", text[m.end():]):
+            continue
+        digits = re.sub(r"\D", "", m.group(0))
+        formatted = bool(re.search(r"[+().\s-]", m.group(0)))
+        if (10 <= len(digits) <= 15
+                and (formatted or len(digits) == 10)
+                and (len(digits) != 10 or digits[0] in "23456789")):
+            out.append((m.start(), m.end(), m.group(0)))
+    return out
 
 _OTP_DIGITS_RE = re.compile(r"\b\d{4,8}\b")
 _OTP_CONTEXT = re.compile(r"(otp|one[-\s]?time|verification|2fa|code)", re.I)

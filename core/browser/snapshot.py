@@ -1,9 +1,10 @@
 from playwright.sync_api import Page
+from uuid import uuid4
 
 from contracts.models import BBox, Element, PageSnapshot
 
 
-def take_snapshot(page: Page) -> PageSnapshot:
+def take_snapshot(page: Page, timeout_ms: int = 30000) -> PageSnapshot:
     """
     Capture a snapshot of an existing Playwright page.
 
@@ -14,16 +15,25 @@ def take_snapshot(page: Page) -> PageSnapshot:
     such as e1, e2, e3, which can be used by the executor.
     """
 
+    if type(timeout_ms) is not int or not 1 <= timeout_ms <= 30000:
+        raise ValueError("timeout_ms must be between 1 and 30000.")
+
+    # Apply the workflow's bound to Playwright operations that honor the
+    # page-level default, and pass it explicitly to screenshot capture below.
+    page.set_default_timeout(timeout_ms)
+
     # Assign stable IDs to interactive elements in DOM order.
+    snapshot_id = uuid4().hex
     raw_elements = page.locator(
         "button, input, textarea, select, a, "
         "[role='button'], [contenteditable='true']"
     ).evaluate_all(
-        """elements => elements.map((el, index) => {
+        """(elements, snapshotId) => elements.map((el, index) => {
             const id = `e${index + 1}`;
 
             // Inject a stable ID that the executor can query.
             el.setAttribute("data-pl-id", id);
+            el.setAttribute("data-pl-snapshot", snapshotId);
 
             const rect = el.getBoundingClientRect();
 
@@ -36,7 +46,11 @@ def take_snapshot(page: Page) -> PageSnapshot:
                 label: el.getAttribute("aria-label")
                     || el.labels?.[0]?.innerText
                     || "",
-                text: (el.innerText || el.textContent || "").trim(),
+                placeholder: el.getAttribute("placeholder") || "",
+                // Form control values are captured separately; treating their
+                // default textContent as visible text duplicates textarea data.
+                text: (el.matches('input, textarea, select') ? '' :
+                    (el.innerText || el.textContent || '')).trim(),
                 value: el.value || "",
                 bbox: {
                     x: rect.x,
@@ -46,10 +60,14 @@ def take_snapshot(page: Page) -> PageSnapshot:
                 },
                 attrs: {
                     placeholder: el.getAttribute("placeholder") || "",
-                    autocomplete: el.getAttribute("autocomplete") || ""
+                    autocomplete: el.getAttribute("autocomplete") || "",
+                    href: el.getAttribute("href") || "",
+                    disabled: Boolean(el.disabled),
+                    readonly: Boolean(el.readOnly)
                 }
             };
-        })"""
+        })""",
+        snapshot_id,
     )
 
     elements = [
@@ -60,6 +78,7 @@ def take_snapshot(page: Page) -> PageSnapshot:
             type=item["type"],
             name=item["name"],
             label=item["label"],
+            placeholder=item["placeholder"],
             text=item["text"],
             value=item["value"],
             bbox=BBox(**item["bbox"]),
@@ -68,13 +87,45 @@ def take_snapshot(page: Page) -> PageSnapshot:
         for item in raw_elements
     ]
 
+    # Capture common visible text containers too; otherwise plain page copy
+    # (including sensitive values) never reaches detection or text sanitization.
+    raw_text_regions = page.locator(
+        "p, h1, h2, h3, h4, h5, h6, li, blockquote, svg, [role='img']"
+    ).evaluate_all(
+        """nodes => nodes.map((el, index) => {
+            const style = getComputedStyle(el);
+            const text = (el.innerText || el.textContent || '').trim();
+            if (!text || !el.getClientRects().length || style.display === 'none'
+                || style.visibility === 'hidden' || style.opacity === '0') return null;
+            const rect = el.getBoundingClientRect();
+            return {
+                id: `text${index + 1}`,
+                tag: el.tagName.toLowerCase(),
+                text,
+                bbox: {x: rect.x, y: rect.y, w: rect.width, h: rect.height}
+            };
+        }).filter(Boolean)"""
+    )
+    elements.extend(
+        Element(
+            id=item["id"], tag=item["tag"], text=item["text"],
+            bbox=BBox(**item["bbox"]),
+        )
+        for item in raw_text_regions
+    )
+
     # Capture after IDs have been injected so the screenshot and
     # element list represent the same page state.
-    screenshot = page.screenshot(full_page=False)
+    screenshot = page.screenshot(full_page=False, timeout=timeout_ms)
 
+    viewport = page.evaluate("""() => ({width: window.innerWidth, height: window.innerHeight,
+        dpr: window.devicePixelRatio || 1})""")
     return PageSnapshot(
         url=page.url,
         title=page.title(),
         screenshot=screenshot,
         elements=elements,
+        viewport_size=(viewport["width"], viewport["height"]),
+        device_pixel_ratio=viewport["dpr"],
+        snapshot_id=snapshot_id,
     )

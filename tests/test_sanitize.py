@@ -114,7 +114,7 @@ def test_prompt_injection_is_flagged_without_rewriting_source_text():
     # Current design flags this text; it does not automatically rewrite it.
     assert result.elements[0].text == malicious_text
     assert any(
-        record.get("type") == "PROMPT_INJECTION"
+        record.get("category") == "instruction_override"
         for record in result.report
     )
 
@@ -124,14 +124,14 @@ def test_prompt_injection_is_flagged_without_rewriting_source_text():
     [
         {"x": 1, "y": 1, "w": 0, "h": 5},
         {"x": 1, "y": 1, "w": 5, "h": -1},
-        {"x": -1, "y": 1, "w": 5, "h": 5},
-        {"x": 1, "y": 1, "w": 200, "h": 5},
         {"x": True, "y": 1, "w": 5, "h": 5},
         {"x": 1, "y": 1, "w": float("inf"), "h": 5},
+        {"x": float("nan"), "y": 1, "w": 5, "h": 5},
+        {"x": 1e308, "y": 1, "w": 1e308, "h": 5},
         {"x": 1, "y": 1, "w": 5},
     ],
 )
-def test_invalid_bounding_boxes_fail_closed(bbox):
+def test_malformed_bounding_boxes_are_reported_without_crashing(bbox):
     detection = Detection(
         element_id="card",
         field="value",
@@ -140,8 +140,59 @@ def test_invalid_bounding_boxes_fail_closed(bbox):
         bbox=bbox,
     )
 
-    with pytest.raises(ValueError, match="Sanitization failed"):
-        sanitize(make_snapshot(), [detection])
+    result = sanitize(make_snapshot(), [detection])
+    assert any(row.get("status") == "failed" for row in result.report)
+
+
+@pytest.mark.parametrize("bbox", [
+    {"x": -5, "y": 10, "w": 10, "h": 10},
+    {"x": 10, "y": -5, "w": 10, "h": 10},
+    {"x": 95, "y": 10, "w": 10, "h": 10},
+    {"x": 10, "y": 95, "w": 10, "h": 10},
+])
+def test_partially_visible_geometry_is_clipped(bbox):
+    result = sanitize(make_snapshot(), [Detection(
+        element_id="card", field="value", type="CARD", span=(0, 4), bbox=bbox
+    )])
+    assert any(row.get("status") == "redacted" for row in result.report)
+
+
+def test_entirely_outside_geometry_is_skipped_and_reported():
+    result = sanitize(make_snapshot(), [Detection(
+        element_id="card", field="value", type="CARD", span=(0, 4),
+        bbox={"x": -20, "y": 1, "w": 5, "h": 5}
+    )])
+    assert any(row.get("status") == "skipped" for row in result.report)
+    summary = next(row for row in result.report
+                   if row.get("kind") == "image_redaction_summary")
+    assert summary["status"] == "incomplete"
+
+
+def test_overlapping_redactions_are_both_reported_and_cover_area():
+    detections = [
+        Detection(element_id="x", type="CARD", bbox={"x": 10, "y": 10, "w": 20, "h": 20}),
+        Detection(element_id="x", type="EMAIL", bbox={"x": 20, "y": 20, "w": 20, "h": 20}),
+    ]
+    result = sanitize(make_snapshot(), detections)
+    image_rows = [row for row in result.report
+                  if isinstance(row, dict) and row.get("status") == "redacted"]
+    assert len(image_rows) == 2
+    with Image.open(BytesIO(result.screenshot)) as image:
+        assert image.getpixel((15, 15)) == (0, 0, 0)
+        assert image.getpixel((35, 35)) == (0, 0, 0)
+
+
+def test_mismatched_viewport_and_screenshot_dimensions_fail_closed():
+    snapshot = make_snapshot(elements=[PageElement(id="card", tag="input")])
+    snapshot.viewport_size = (120, 100)
+    detection = Detection(
+        element_id="card", field="value", type="CARD", span=(0, 1),
+        bbox={"x": 5, "y": 5, "w": 10, "h": 10},
+    )
+    result = sanitize(snapshot, [detection])
+    summary = next(row for row in result.report
+                   if row.get("kind") == "image_redaction_summary")
+    assert summary["status"] == "incomplete"
 
 
 def test_missing_bbox_is_allowed_for_text_only_detection():
@@ -195,5 +246,5 @@ def test_original_snapshot_is_not_mutated():
 def test_missing_or_invalid_screenshot_is_rejected(bad_screenshot):
     snapshot = make_snapshot(screenshot=bad_screenshot)
 
-    with pytest.raises(ValueError, match="Sanitization failed"):
+    with pytest.raises(ValueError, match="Snapshot screenshot"):
         sanitize(snapshot, [])

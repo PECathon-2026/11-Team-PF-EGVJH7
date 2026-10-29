@@ -10,14 +10,25 @@ env/
 .env
 .env.*
 !.env.example
+.vault.json
+*.pem
+*.key
 
 # Local vault: never commit real secrets
-.vault.json
 
 # Test outputs
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .coverage
 htmlcov/
+coverage.xml
+testlab/results/
+testlab/.browser-profile/
+playwright/.cache/
+browser-profile/
+*.log
+*.tmp
 
 # Generated evaluation results
 results/*.json

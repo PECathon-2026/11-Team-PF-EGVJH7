@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import math
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Optional
@@ -60,6 +61,8 @@ def bbox_to_dict(bbox: Any) -> Optional[dict[str, float]]:
         }
 
     try:
+        if any(isinstance(values[key], bool) for key in ("x", "y", "w", "h")):
+            return None
         result = {
             "x": float(values["x"]),
             "y": float(values["y"]),
@@ -69,7 +72,8 @@ def bbox_to_dict(bbox: Any) -> Optional[dict[str, float]]:
     except (KeyError, TypeError, ValueError):
         return None
 
-    if result["w"] <= 0 or result["h"] <= 0:
+    if (not all(math.isfinite(v) for v in result.values())
+            or result["w"] <= 0 or result["h"] <= 0):
         return None
 
     return result
@@ -119,7 +123,7 @@ def make_detection(
 
     detection_data = {
         "type": normalize_type(detection_type),
-        "source": "custom_rule",
+        "source": "custom_privacy_rule",
         "element_id": element_id,
         "field": "value",
         "span": None,
@@ -315,10 +319,25 @@ def sanitize(
 
     # redact_image returns a tuple:
     # (sanitized_png_bytes, image_redaction_report)
-    sanitized_screenshot, image_report = redact_image(
-        snapshot.screenshot,
-        working_detections,
+    with Image.open(BytesIO(snapshot.screenshot)) as source_image:
+        image_size = source_image.size
+    geometry_matches = (
+        snapshot.viewport_size is None
+        or tuple(snapshot.viewport_size) == tuple(image_size)
     )
+    if geometry_matches:
+        sanitized_screenshot, image_report = redact_image(
+            snapshot.screenshot, working_detections,
+        )
+    else:
+        sanitized_screenshot = snapshot.screenshot
+        image_report = [{
+            "element_id": str(get_value(d, "element_id", "") or ""),
+            "type": str(get_value(d, "type", "SECRET")),
+            "status": "failed",
+            "reason": ("Screenshot dimensions do not match the captured viewport; "
+                       "image redaction could not be mapped safely."),
+        } for d in working_detections]
 
     validate_image(sanitized_screenshot, "Sanitized screenshot")
 
@@ -329,6 +348,15 @@ def sanitize(
     report = []
     report.extend(text_report or [])
     report.extend(image_report or [])
+    unresolved = [row for row in image_report if row.get("status") != "redacted"]
+    report.append({
+        "kind": "image_redaction_summary",
+        "status": "complete" if not unresolved else "incomplete",
+        "redacted": sum(row.get("status") == "redacted" for row in image_report),
+        "unresolved": len(unresolved),
+        "reason": (None if not unresolved else
+                   "One or more sensitive detections were not covered in the screenshot."),
+    })
     report.extend(injection_report or [])
     report.extend(rule_report or [])
 
