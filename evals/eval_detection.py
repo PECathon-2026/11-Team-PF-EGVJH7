@@ -5,40 +5,12 @@ from playwright.sync_api import sync_playwright
 from contracts.models import PageSnapshot, Element, BBox
 from core.detect import detect
 
-# We use a local snapshot function so we don't depend on P1's code being perfect yet
 def local_take_snapshot(page):
-    elements = page.evaluate('''() => {
-        let els = [];
-        let nodes = document.querySelectorAll('input, textarea, button, span, p, label');
-        let id_counter = 1;
-        for (let node of nodes) {
-            if (node.offsetWidth === 0 && node.offsetHeight === 0) continue;
-            let rect = node.getBoundingClientRect();
-            let el = {
-                id: 'e' + id_counter++,
-                tag: node.tagName.toLowerCase(),
-                type: node.type || null,
-                name: node.name || null,
-                label: node.labels && node.labels.length > 0 ? node.labels[0].innerText : null,
-                text: node.innerText || '',
-                value: node.value || '',
-                bbox: {x: rect.x, y: rect.y, w: rect.width, h: rect.height},
-                attrs: {}
-            };
-            for (let attr of node.attributes) {
-                if (attr.name !== 'id') el.attrs[attr.name] = attr.value;
-            }
-            // Use CSS selector as the stable ID for evaluation mapping
-            el.attrs['css_selector'] = node.id ? '#' + node.id : null;
-            els.push(el);
-        }
-        return els;
-    }''')
-    
     elements = []
     for e in page.evaluate('''() => {
         let els = [];
-        let nodes = document.querySelectorAll('input, textarea, button, span, p, label');
+        // CHANGED: Only grab inputs, buttons, and elements that have an ID
+        let nodes = document.querySelectorAll('input, textarea, button, [id]');
         for (let node of nodes) {
             if (node.offsetWidth === 0 && node.offsetHeight === 0) continue;
             let rect = node.getBoundingClientRect();
@@ -55,23 +27,23 @@ def local_take_snapshot(page):
             for (let attr of node.attributes) {
                 el.attrs[attr.name] = attr.value;
             }
-            el.attrs['css_selector'] = node.id ? '#' + node.id : null;
+            if (node.id) {
+                el.attrs['css_selector'] = '#' + node.id;
+            }
             els.push(el);
         }
         return els;
     }'''):
-        # Need to assign element IDs that match our Detection model (e1, e2...)
+        attrs = {k: str(v) for k, v in e["attrs"].items() if v is not None}
         elements.append(Element(
             id="temp", tag=e["tag"], type=e["type"], name=e["name"], label=e["label"],
-            text=e["text"], value=e["value"], bbox=BBox(**e["bbox"]), attrs=e["attrs"]
+            text=e["text"], value=e["value"], bbox=BBox(**e["bbox"]), attrs=attrs
         ))
     
-    # Assign stable IDs based on CSS selector so we can match ground truth later
     for i, el in enumerate(elements):
         el.id = f"e{i+1}"
 
     return PageSnapshot(url=page.url, title=page.title(), screenshot=b"", elements=elements)
-
 
 def evaluate_page(page_name):
     pages_dir = "testlab/pages"
@@ -81,7 +53,7 @@ def evaluate_page(page_name):
     if not os.path.exists(gt_path):
         return None
         
-    with open(gt_path, "r", encoding="utf-8") as f:
+    with open(gt_path, "r", encoding="utf-8-sig") as f:
         ground_truth = json.load(f)
 
     url = f"http://localhost:8000/{page_name}.html"
@@ -95,20 +67,17 @@ def evaluate_page(page_name):
         dets = detect(snap)
         browser.close()
 
-    # Map element IDs back to CSS selectors for comparison
     el_to_css = {el.id: el.attrs.get('css_selector') for el in snap.elements}
 
     tp = 0
     fp = 0
     fn = 0
     
-    # Check for True Positives and False Negatives
     matched_gt = set()
     for gt in ground_truth:
         found = False
         for d in dets:
             if el_to_css.get(d.element_id) == gt["element_id_selector"]:
-                # Check if the type matches
                 if d.type == gt["type"]:
                     found = True
                     break
@@ -118,7 +87,6 @@ def evaluate_page(page_name):
         else:
             fn += 1
 
-    # Check for False Positives (detections that don't match any ground truth)
     for d in dets:
         css = el_to_css.get(d.element_id)
         if css not in matched_gt:

@@ -38,8 +38,8 @@ def find_otp(text: str):
     if not _OTP_CONTEXT.search(text): return []
     return [(m.start(), m.end(), m.group(0)) for m in _OTP_DIGITS_RE.finditer(text)]
 
-# --- Phase 2 Additions: API Keys, JWT, IPs ---
-_API_KEY_RE = re.compile(r"\b(sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b")
+# FIXED: Added underscore and hyphen to the character class for sk- keys
+_API_KEY_RE = re.compile(r"\b(sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b")
 def find_api_keys(text: str):
     return [(m.start(), m.end(), m.group(0)) for m in _API_KEY_RE.finditer(text)]
 
