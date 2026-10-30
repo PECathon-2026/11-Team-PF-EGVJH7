@@ -1,3 +1,4 @@
+import pytest
 from core.detect.patterns import find_cards, find_email, find_otp, find_phone
 from contracts.models import Element, PageSnapshot
 from core.detect import detect
@@ -41,3 +42,42 @@ def test_email_placeholder_is_detected_and_removed_from_sanitized_element():
     assert any(hit.field == "placeholder" and hit.type == "EMAIL" for hit in detections)
     result = sanitize(snapshot, detections)
     assert "edge.user+tag@example.test" not in result.elements[0].placeholder
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("+91 98765 43210", "+91 98765 43210"),
+    ("+91-98765-43210", "+91-98765-43210"),
+    ("+91 9876543210", "+91 9876543210"),
+    ("98765 43210", "98765 43210"),
+    ("+919876543210", "+919876543210"),
+    ("09876543210", "09876543210"),
+    ("0091 98765 43210", "0091 98765 43210"),
+    ("+91 98765-43210", "+91 98765-43210"),
+    ("Call +91 98765 43210 today.", "+91 98765 43210"),
+])
+def test_indian_mobile_formats_are_detected_with_exact_offsets(text, expected):
+    hits = find_phone(text)
+    assert [raw for _, _, raw in hits] == [expected]
+    start, end, raw = hits[0]
+    assert text[start:end] == raw
+
+
+@pytest.mark.parametrize("text", [
+    "12345 67890",          # Indian mobiles start with 6-9
+    "+91 12345 67890",
+    "4111 98765 43210",     # glued to preceding digits (card-like)
+    "98765 43210 99",       # glued to following digits
+    "98765 432101",         # too many digits
+    "98765  43210",         # double separator
+    "order98765 43210",     # glued to a word
+    "Order ID 58765-43210-7",
+])
+def test_indian_mobile_negatives(text):
+    assert find_phone(text) == []
+
+
+def test_indian_mobile_keeps_surrounding_text_offsets():
+    text = "Ping me on +91 98765 43210 or mail a@b.co"
+    [(start, end, raw)] = find_phone(text)
+    assert (start, end) == (11, 26)
+    assert text[:start] == "Ping me on " and text[end:] == " or mail a@b.co"

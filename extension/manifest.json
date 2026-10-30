@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "PrivacyLens",
+  "version": "0.1.0",
+  "description": "A privacy-preserving AI browser agent: the AI sees synthetic data, never yours.",
+  "minimum_chrome_version": "116",
+  "permissions": ["sidePanel", "scripting", "storage", "tabs"],
+  "host_permissions": ["https://generativelanguage.googleapis.com/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/panel.html"
+  },
+  "action": {
+    "default_title": "Open PrivacyLens",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src https://generativelanguage.googleapis.com"
+  }
+}

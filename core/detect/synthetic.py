@@ -4,21 +4,7 @@ import re
 # CACHE: Ensures repeated occurrences of the same entity resolve to the same synthetic value
 _SYNTH_CACHE = {}
 
-def generate_synthetic_card(real_card: str) -> str:
-    clean_real = re.sub(r"[ -]", "", real_card)
-    
-    # If it's a short number (CVV/CVC), generate a random 3-digit fake
-    if len(clean_real) <= 4:
-        return str(random.randint(100, 999))
-        
-    if len(clean_real) < 13: 
-        return real_card
-        
-    bin_prefix = clean_real[:6]
-    middle_length = len(clean_real) - 7
-    middle = "".join([str(random.randint(0, 9)) for _ in range(middle_length)])
-    partial = bin_prefix + middle
-    
+def _luhn_check_digit(partial: str) -> str:
     total = 0
     for i, ch in enumerate(reversed(partial)):
         n = int(ch)
@@ -26,12 +12,34 @@ def generate_synthetic_card(real_card: str) -> str:
             n *= 2
             if n > 9: n -= 9
         total += n
-    check_digit = (10 - (total % 10)) % 10
-    synthetic_clean = partial + str(check_digit)
-    
-    if len(synthetic_clean) == 16:
-        return f"{synthetic_clean[:4]} {synthetic_clean[4:8]} {synthetic_clean[8:12]} {synthetic_clean[12:]}"
-    return synthetic_clean
+    return str((10 - (total % 10)) % 10)
+
+
+def generate_synthetic_card(real_card: str) -> str:
+    clean_real = re.sub(r"[ -]", "", real_card)
+
+    # CVV/CVC: same length, never the real value.
+    if len(clean_real) <= 4:
+        length = len(clean_real) or 3
+        while True:
+            fake = "".join(str(random.randint(0, 9)) for _ in range(length))
+            if fake != clean_real:
+                return fake
+
+    if len(clean_real) < 13 or len(clean_real) > 19 or not clean_real.isdigit():
+        return real_card
+
+    # The number is generated independently of the real card: the first six
+    # digits (BIN/IIN) identify the issuing bank, so they are never reused.
+    while True:
+        partial = "4" + "".join(str(random.randint(0, 9)) for _ in range(len(clean_real) - 2))
+        synthetic_clean = partial + _luhn_check_digit(partial)
+        if synthetic_clean[:6] != clean_real[:6] and synthetic_clean != clean_real:
+            break
+
+    # Keep the original layout (spaces/dashes) so the page context still reads naturally.
+    digits = iter(synthetic_clean)
+    return re.sub(r"\d", lambda _: next(digits), real_card)
 
 def generate_synthetic_email(real_email: str) -> str:
     names = ["alex.smith", "jamie.doe", "taylor.jones", "jordan.lee"]

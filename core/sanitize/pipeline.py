@@ -152,6 +152,28 @@ def _replace_recursive(
     return value
 
 
+def _serialize_report(report: Any) -> list[dict[str, Any]]:
+    """Convert sanitizer report rows into JSON-safe dictionaries.
+
+    Unknown row types are rejected rather than stringified, so the report
+    can never smuggle an uninspected object into the model payload.
+    """
+
+    rows = []
+
+    for row in report or []:
+        if is_dataclass(row) and not isinstance(row, type):
+            rows.append(asdict(row))
+        elif hasattr(row, "model_dump"):
+            rows.append(row.model_dump(mode="json"))
+        elif isinstance(row, dict):
+            rows.append(deepcopy(row))
+        else:
+            raise TypeError("Sanitizer report contains an unsupported row.")
+
+    return rows
+
+
 def _apply_synthetic_replacements_to_spans(
     serialized_elements, original_elements, detections, replacements
 ):

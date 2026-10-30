@@ -32,19 +32,42 @@ _PHONE_RE = re.compile(
     r"(?<!\w)(?:\+\d{1,3}[\s().-]*)?(?:\(?\d{2,4}\)?[\s().-]*)?"
     r"\d{3,4}[\s().-]*\d{3,4}(?![\w\s().-]*\d)"
 )
+# Indian mobile numbers: optional +91 / 0091 / 0 prefix, then 10 digits
+# starting 6-9, commonly grouped 5+5 ("+91 98765 43210"), which the generic
+# pattern above cannot split. ASCII [0-9] keeps Python/JS parity exact.
+_IN_MOBILE_RE = re.compile(
+    r"(?<![\w+])(?:(?:\+|00)91[ -]?|0)?[6-9][0-9]{4}[ -]?[0-9]{5}(?!\w)"
+)
+
+
+def _isolated(text: str, start: int, end: int) -> bool:
+    """Reject matches glued to more digits, e.g. inside card numbers."""
+    if re.search(r"\d[\s().-]*$", text[:start]):
+        return False
+    return not re.match(r"^[\s().-]*\d", text[end:])
+
+
 def find_phone(text: str):
-    out = []
+    found = []
     for m in _PHONE_RE.finditer(text):
-        if re.search(r"\d[\s().-]*$", text[:m.start()]):
-            continue
-        if re.match(r"^[\s().-]*\d", text[m.end():]):
+        if not _isolated(text, m.start(), m.end()):
             continue
         digits = re.sub(r"\D", "", m.group(0))
         formatted = bool(re.search(r"[+().\s-]", m.group(0)))
         if (10 <= len(digits) <= 15
                 and (formatted or len(digits) == 10)
                 and (len(digits) != 10 or digits[0] in "23456789")):
-            out.append((m.start(), m.end(), m.group(0)))
+            found.append((m.start(), m.end(), m.group(0)))
+    for m in _IN_MOBILE_RE.finditer(text):
+        if _isolated(text, m.start(), m.end()):
+            found.append((m.start(), m.end(), m.group(0)))
+
+    # Merge both matchers: earliest start wins, then the longest span.
+    out = []
+    for start, end, raw in sorted(found, key=lambda hit: (hit[0], -hit[1])):
+        if out and start < out[-1][1]:
+            continue
+        out.append((start, end, raw))
     return out
 
 _OTP_DIGITS_RE = re.compile(r"\b\d{4,8}\b")

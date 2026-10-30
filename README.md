@@ -1,4 +1,27 @@
-@'
+# PrivacyLens
+
+A privacy-preserving AI browser agent (PECathon 2026, PS-004). Sensitive data
+on a web page is detected (patterns + Luhn/Verhoeff validation + page
+structure), replaced with synthetic values or placeholders before any AI sees
+it, and every outgoing request passes a fail-closed egress firewall. Risky
+actions such as payments need explicit human approval.
+
+## Browser extension
+
+The complete product is a Chrome/Edge side-panel extension in
+[`extension/`](extension/README.md): live privacy scanner, AI-Eye page
+overlay, agent with an OBSERVE → SANITIZE → REASON → VALIDATE → APPROVE →
+EXECUTE lifecycle, approval center, threat and validation centers, a
+hash-chained ledger and a Test Lab for the five PS-004 scenarios. Install it
+with **Load unpacked**; see [extension/README.md](extension/README.md).
+
+## Tests
+
+```sh
+pip install -r requirements.txt && python -m playwright install chromium
+python -m pytest            # Python suite + JS/Python parity + extension E2E
+cd extension && npm test    # extension unit tests (Node >= 20)
+```
 
 ## Performance Evaluation & Benchmarks
 
@@ -42,3 +65,11 @@ py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python -m playwright install chromium
+```
+
+Then start the fixture server and run the evaluation:
+
+```powershell
+python testlab/serve.py
+python -m evals.eval_detection --base-url http://127.0.0.1:8000
+```

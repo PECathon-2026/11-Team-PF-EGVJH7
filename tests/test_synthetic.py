@@ -32,8 +32,9 @@ def test_unsupported_type_raises_error():
         get_synthetic_value("UNKNOWN_TYPE", "12345")
 
 def test_malformed_input_fails_safely():
-    # Malformed card (too short) should return the original, not crash
-    real = "123"
+    # Malformed card (too short to be a PAN, too long to be a CVV) should
+    # return the original, not crash. 3-4 digit inputs are treated as CVVs.
+    real = "12345"
     fake = generate_synthetic_card(real)
     assert fake == real, "Malformed input did not fail safely"
 
@@ -44,3 +45,30 @@ def test_collision_handling():
     fake1 = get_synthetic_value("CARD", real1)
     fake2 = get_synthetic_value("CARD", real2)
     assert fake1 != fake2, "Collision detected: two different real cards mapped to the same fake card"
+
+
+@pytest.mark.parametrize("real", [
+    "4111 1111 1111 1111",
+    "5555-5555-5555-4444",
+    "378282246310005",
+    "6011111111111117",
+    "4000056655665556",
+])
+def test_synthetic_card_never_inherits_issuer_prefix(real):
+    real_digits = re.sub(r"\D", "", real)
+    for _ in range(300):
+        fake = generate_synthetic_card(real)
+        fake_digits = re.sub(r"\D", "", fake)
+        assert fake_digits[:6] != real_digits[:6], "BIN/IIN leaked into synthetic card"
+        assert fake_digits != real_digits
+        assert len(fake_digits) == len(real_digits)
+        assert luhn_ok(fake_digits)
+        # Layout (spaces/dashes) of the original is preserved.
+        assert re.sub(r"\d", "0", fake) == re.sub(r"\d", "0", real)
+
+
+def test_synthetic_cvv_keeps_length_and_differs():
+    for real in ("123", "0000", "999"):
+        for _ in range(200):
+            fake = generate_synthetic_card(real)
+            assert len(fake) == len(real) and fake.isdigit() and fake != real
