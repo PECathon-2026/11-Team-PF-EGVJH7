@@ -424,3 +424,61 @@ def test_video_shield_blurs_feeds_and_names_on_the_page(ui):
     filters = shop.evaluate(FILTERS_JS)
     assert filters["feed"] == "saturate(2)"
     assert filters["name"] == "none" and filters["email"] == "none"
+
+
+# True when the element, or anything it sits inside (across shadow roots),
+# is rendered with a blur filter.
+BLURRED_JS = """(el) => {
+    for (let n = el; n; n = n.parentElement ?? (n.getRootNode() instanceof ShadowRoot ? n.getRootNode().host : null)) {
+        if (getComputedStyle(n).filter.includes('blur(')) return true;
+    }
+    return false;
+}"""
+
+
+def _blurred(frame, selector):
+    return frame.locator(selector).evaluate(BLURRED_JS)
+
+
+def test_video_shield_on_a_real_call_layout(ui):
+    """Names as bare text on tiles, a tile in a shadow root, one in an iframe."""
+    shop, panel, _ = ui("meet.html")
+    shop.wait_for_function("() => document.querySelector('#tile-frame').contentDocument?.readyState === 'complete'")
+
+    panel.click("#nav-overlay")
+    panel.click("label[for=video-shield-toggle]")
+    panel.wait_for_selector("#shield-status:has-text('across 2 frames')", timeout=10000)
+
+    assert _blurred(shop, "#tile-alice .who")                      # bare name on a tile
+    assert shop.evaluate(f"""() => ({BLURRED_JS})(document.querySelector('#tile-rahul')
+        .shadowRoot.querySelector('.who'))""")                     # name inside a shadow root
+    frame = next(f for f in shop.frames if f.url.endswith("meet-frame.html"))
+    assert _blurred(frame, ".who")                                  # inside an iframe
+    for i in range(5):                                              # call controls stay usable
+        assert not _blurred(shop, f"#controls button >> nth={i}")
+
+    # Someone joins after the shield is on.
+    shop.evaluate("""() => {
+        document.querySelector('#grid').insertAdjacentHTML('beforeend',
+            '<div class="tile" id="tile-late"><canvas width="320" height="180"></canvas><div class="who">Late Joiner</div></div>');
+        window.paintTile(document.querySelector('#tile-late canvas'), '#f4a261', '#e9c46a');
+    }""")
+    shop.wait_for_function(f"() => ({BLURRED_JS})(document.querySelector('#tile-late .who'))")
+
+    panel.click("label[for=video-shield-toggle]")
+    shop.wait_for_function("() => !document.querySelector('[data-pl-censored]')")
+    assert not _blurred(shop, "#tile-alice .who")
+    assert not _blurred(frame, ".who")
+
+
+def test_stale_script_from_before_an_extension_reload_is_replaced(ui):
+    """A dead copy of the page script must not block the new one."""
+    _, panel, tab_id = ui("checkout.html")
+    panel.evaluate(
+        """(tabId) => chrome.scripting.executeScript({target: {tabId},
+            func: () => { window.__privacyLens = { alive: () => false }; window.__privacyLensLoaded = true; }})""",
+        tab_id,
+    )
+    panel.click("#nav-scanner")
+    panel.click("#scan-button")
+    panel.wait_for_selector("#protect-banner.ok", timeout=10000)

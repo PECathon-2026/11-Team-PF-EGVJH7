@@ -60,14 +60,24 @@ Two protections, for two different audiences:
   never captured or sent. Participant names announced by a label (`Name:`,
   `Host:`, `Speaker:`, `Participant:`, `From:` …) or held in a name field are
   detected and replaced with synthetic names, like emails and phones.
-- **Your screen.** AI-Eye → *Video privacy shield* blurs every `<video>` and
-  `<canvas>` feed and every detected personal detail (names, emails, phones,
-  cards…) directly on the page, for screen sharing, recordings and
-  shoulder-surfing. Tiles that appear later (people joining) are blurred as
-  they appear; switching the shield off restores the page exactly.
+- **Your screen.** AI-Eye → *Video privacy shield* blurs every video tile
+  (the `<video>`/`<canvas>` feed **and the name printed on it**) and every
+  detected personal detail (names, emails, phones, cards…) directly on the
+  page, for screen sharing, recordings and shoulder-surfing. It reaches tiles
+  inside web components (open shadow DOM) and iframes, blurs tiles that appear
+  later (people joining), keeps the call controls usable, and restores the
+  page exactly when switched off. Turning it on asks for access to the site if
+  needed and scans the page.
 
-Not done: per-face detection (the shield blurs whole frames), and names that
-appear in free text without a label.
+Using it on a real call: open the call tab, open PrivacyLens, AI-Eye → turn on
+*Video privacy shield*, and accept Chrome's "allow on this site" prompt.
+
+Not done / not verified: per-face detection (whole tiles are blurred); names in
+side panels (people list, chat) that have no label; closed shadow roots;
+iframes on other sites unless you grant access to them too. Real Meet, Zoom and
+Teams were not tested (they need logged-in accounts): `testlab/pages/meet.html`
+reproduces their structure (bare names on tiles, shadow-DOM and iframe tiles,
+a control bar) and is covered by the end-to-end tests.
 
 ## Running the five PS-004 scenarios
 
@@ -154,7 +164,7 @@ navigation (verified end to end: catalog → checkout → approval).
 ```sh
 cd extension && npm test                          # 57 unit tests (Node ≥ 20)
 python -m pytest tests/test_extension_parity.py   # JS == Python detectors and risk score
-python -m pytest tests/test_extension_e2e.py      # real Chromium + real extension, 19 tests
+python -m pytest tests/test_extension_e2e.py      # real Chromium + real extension, 21 tests
 python -m pytest                                  # everything (Python + parity + E2E)
 ```
 

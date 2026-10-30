@@ -35,9 +35,11 @@ export function overlayView(store, ctl) {
         h("span", { id: "monitor-text", text: mon ? "Page monitoring active" : "Not attached to this page" }),
         mon ? chip(mon.overlayVisible ? "Overlay visible" : "Overlay hidden", mon.overlayVisible ? "ok" : "neutral") : null),
       mon ? h("div", { class: "muted small", text: `${mon.protectedCount} protected box(es), ${mon.quarantinedCount} quarantined on the page.` }) : null,
-      mon?.videoShield ? h("div", { class: "monitor", id: "shield-status" },
+      S.shield.error ? h("div", { class: "warning small", id: "shield-error" }, icon("alert", 14), h("span", { text: `Shield not applied: ${S.shield.error}` })) : null,
+      S.settings.videoShield && S.shield.on ? h("div", { class: "monitor", id: "shield-status" },
         icon("eye"),
-        h("span", { text: `Shield on: ${mon.censoredMedia} video feed(s) and ${mon.censoredDetails} personal detail(s) blurred` })) : null,
+        h("span", { text: `Shield on: ${S.shield.media} video tile(s) and ${S.shield.details} personal detail(s) blurred${S.shield.frames > 1 ? ` across ${S.shield.frames} frames` : ""}` })) : null,
+      S.settings.videoShield && S.shield.on && S.shield.media === 0 ? h("div", { class: "muted small", text: "No video on this page yet. Join the call: new tiles are blurred as they appear." }) : null,
       h("p", { class: "muted tiny", text: "The AI never receives video frames or screenshots: PrivacyLens sends text only. The shield blurs whole frames; it does not detect individual faces." }));
   }
 

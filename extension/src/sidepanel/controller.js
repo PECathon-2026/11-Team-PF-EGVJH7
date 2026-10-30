@@ -121,17 +121,33 @@ export function createController(store, { pinnedTabId = null } = {}) {
       }
     }
     if ("overlay" in patch) await setOverlay(patch.overlay);
-    if ("videoShield" in patch) {
-      await log("video_shield", { on: patch.videoShield });
-      activity(`Video privacy shield ${patch.videoShield ? "on" : "off"}`, patch.videoShield ? "ok" : "warn", "settings");
-      if (S.tab.access && S.tab.id != null) {
-        try {
-          await ensureContentScript(S.tab.id);
-          await applyVideoShield(S.tab.id, S.scan);
-        } catch {
-          // Page not injectable right now; applied on the next scan.
-        }
-        await refreshTab();
+    if ("videoShield" in patch) await toggleVideoShield(patch.videoShield);
+  }
+
+  // Runs inside the user's click, so it may ask for site access right here.
+  async function toggleVideoShield(on) {
+    await log("video_shield", { on });
+    activity(`Video privacy shield ${on ? "on" : "off"}`, on ? "ok" : "warn", "settings");
+    const fail = (error) => {
+      store.set({ shield: { ...S.shield, on: false, error } });
+      activity(`Video privacy shield: ${error}`, "bad", "settings");
+    };
+    await refreshTab();
+    if (!on) {
+      if (S.tab.access) await applyVideoShield(S.tab.id, S.scan).catch(() => {});
+      store.set({ shield: { on: false, media: 0, details: 0, frames: 0, error: null } });
+      return;
+    }
+    if (!S.tab.web) return fail("this is not a web page (open the call tab first).");
+    if (!(await requestAccess())) return fail(`access to ${S.tab.origin} was not granted. Click "Allow on this site".`);
+    // A scan finds names/emails to blur and applies the shield; if scanning
+    // is not allowed (firewall off, never-send list), still blur the feeds.
+    const scanned = await scanCurrentPage();
+    if (!scanned.ok) {
+      try {
+        await applyVideoShield(S.tab.id, null);
+      } catch (err) {
+        fail(err.message);
       }
     }
   }
@@ -226,11 +242,36 @@ export function createController(store, { pinnedTabId = null } = {}) {
 
   // Blur video/canvas feeds and every personal detail found by the last scan.
   const visibleDetailIds = (rows = []) => [...new Set(rows.filter((r) => !r.hidden).map((r) => r.id))];
-  async function applyVideoShield(tabId, scan) {
-    return sendToTab(tabId, { cmd: "shield", video: S.settings.videoShield, detailIds: visibleDetailIds(scan?.rows) });
+  // Runs in every frame of the tab: call apps often render tiles in iframes.
+  // Detail ids come from the top-frame snapshot, so only frame 0 uses them.
+  async function applyVideoShield(tabId, scan, video = S.settings.videoShield) {
+    const detailIds = visibleDetailIds(scan?.rows);
+    const run = (target) => chrome.scripting.executeScript({
+      target,
+      func: (on, ids) => globalThis.__privacyLens?.shield?.({ video: on, detailIds: window === window.top ? ids : [] }) ?? null,
+      args: [video, detailIds],
+    });
+    let results;
+    try {
+      await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["src/content/content.js"] });
+      results = await run({ tabId, allFrames: true });
+    } catch {
+      // Some frames are off-limits (no access to their site): top frame only.
+      await ensureContentScript(tabId);
+      results = await run({ tabId });
+    }
+    const done = results.filter((r) => r.result);
+    const counts = {
+      censoredMedia: done.reduce((n, r) => n + r.result.censoredMedia, 0),
+      censoredDetails: done.reduce((n, r) => n + r.result.censoredDetails, 0),
+      frames: done.length,
+    };
+    store.set({ shield: { on: video, media: counts.censoredMedia, details: counts.censoredDetails, frames: counts.frames, error: null, at: new Date().toISOString() } });
+    return counts;
   }
 
   async function setOverlay(visible) {
+    if (visible && !S.tab.access) await requestAccess(); // inside the user's click
     if (!S.tab.access || S.tab.id == null) return;
     try {
       await ensureContentScript(S.tab.id);
@@ -446,23 +487,34 @@ export function createController(store, { pinnedTabId = null } = {}) {
   // --- Test Lab -------------------------------------------------------------------
 
   async function openTestTab(url) {
-    if (testTabId != null) {
-      try {
-        await chrome.tabs.update(testTabId, { url });
-      } catch {
-        testTabId = null;
+    // Record tab events from before navigating, then wait until this tab has
+    // reported "loading" for this URL *and* "complete" after it. Polling the
+    // status alone can see the previous page's stale "complete".
+    const events = [];
+    const onUpdated = (tabId, info, tab) => events.push({ tabId, status: info.status, url: tab.url });
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    try {
+      if (testTabId != null) {
+        try {
+          await chrome.tabs.update(testTabId, { url });
+        } catch {
+          testTabId = null; // closed by the user
+        }
       }
+      if (testTabId == null) testTabId = (await chrome.tabs.create({ url, active: false })).id;
+
+      for (let waited = 0; waited < 15_000; waited += 100) {
+        const mine = events.filter((e) => e.tabId === testTabId);
+        const started = mine.findIndex((e) => e.status === "loading" && e.url === url);
+        if (started >= 0 && mine.slice(started).some((e) => e.status === "complete")) {
+          return chrome.tabs.get(testTabId);
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`Test page did not load. Is the test server running at ${new URL(url).origin}? Start it with: python testlab/serve.py`);
+    } finally {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
     }
-    if (testTabId == null) testTabId = (await chrome.tabs.create({ url, active: false })).id;
-    // Wait for *this* navigation: a reused tab still reports the previous
-    // page as "complete" until the new load starts. An unreachable server
-    // ends on Chrome's error page, whose URL differs, and fails below.
-    for (let i = 0; i < 100; i++) {
-      const tab = await chrome.tabs.get(testTabId);
-      if (tab.status === "complete" && tab.url === url) return tab;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    throw new Error(`Test page did not load. Is the test server running at ${new URL(url).origin}? Start it with: python testlab/serve.py`);
   }
 
   async function runScenario(id) {
@@ -550,7 +602,7 @@ export function createController(store, { pinnedTabId = null } = {}) {
 
   // Turns the shield on in the test tab and reads back what the page renders.
   async function videoShieldCheck(tabId, scan) {
-    const counts = await sendToTab(tabId, { cmd: "shield", video: true, detailIds: visibleDetailIds(scan.sanitized.rows) });
+    const counts = await applyVideoShield(tabId, { rows: scan.sanitized.rows }, true);
     const [{ result: filters }] = await chrome.scripting.executeScript({
       target: { tabId },
       func: () => [...document.querySelectorAll("[data-pl-censored]")].map((el) => `${el.tagName.toLowerCase()}:${getComputedStyle(el).filter}`),
@@ -581,7 +633,15 @@ export function createController(store, { pinnedTabId = null } = {}) {
     chrome.tabs.onUpdated.addListener((tabId, info) => {
       if (tabId === S.tab.id && info.status === "complete") refreshTab();
     });
-    setInterval(() => S.tab.access && refreshTab(), 4000); // monitoring indicator
+    // Monitoring indicator; while the shield is on, re-apply it so tiles in
+    // frames or components that loaded later are covered too.
+    setInterval(async () => {
+      if (!S.tab.access) return;
+      await refreshTab();
+      if (S.settings.videoShield && S.tab.id != null) {
+        applyVideoShield(S.tab.id, S.scan).catch((err) => store.set({ shield: { ...S.shield, error: err.message } }));
+      }
+    }, 4000);
   }
 
   return {
