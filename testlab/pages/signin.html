@@ -10,10 +10,16 @@
     <label for="password">Password</label>
     <input id="password" name="password" type="password">
 
+    <label><input id="show-password" type="checkbox"> Show password</label>
+    <a id="forgot" href="#">Forgot password?</a>
+
     <button id="signin-btn" type="submit">Sign in</button>
   </form>
   <p id="result" hidden>Signed in successfully.</p>
   <script>
+    document.getElementById("show-password").addEventListener("change", (event) => {
+      document.getElementById("password").type = event.target.checked ? "text" : "password";
+    });
     // Test fixture: record the submission instead of sending it anywhere.
     document.getElementById("signin").addEventListener("submit", (event) => {
       event.preventDefault();

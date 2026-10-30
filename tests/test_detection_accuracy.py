@@ -81,3 +81,20 @@ def test_indian_mobile_keeps_surrounding_text_offsets():
     [(start, end, raw)] = find_phone(text)
     assert (start, end) == (11, 26)
     assert text[:start] == "Ping me on " and text[end:] == " or mail a@b.co"
+
+
+def test_labels_on_non_text_controls_are_not_secret_fields():
+    from core.detect.structural import structural_hits
+
+    def hits(**kwargs):
+        return [d.type for d in structural_hits(Element(id="x", **kwargs))]
+
+    assert hits(tag="input", type="checkbox", label="Show password", value="on") == []
+    assert hits(tag="input", type="checkbox", label="Remember my email", value="on") == []
+    assert hits(tag="button", type="button", text="Show password") == []
+    assert hits(tag="a", text="Forgot password?", label="Forgot password?") == []
+    assert hits(tag="input", type="radio", name="card_type", label="Credit card", value="credit") == []
+    # Still detected:
+    assert hits(tag="input", type="password", label="Password", value="hunter2") == ["PASSWORD"]
+    assert "EMAIL" in hits(tag="input", type="email", label="Email", value="a@b.test")
+    assert hits(tag="textarea", label="API key", value="abc123") == ["API_KEY"]

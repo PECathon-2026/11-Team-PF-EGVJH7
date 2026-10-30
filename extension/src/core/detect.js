@@ -30,7 +30,20 @@ const RISK_WEIGHTS = {
 
 export const SCANNED_FIELDS = ["text", "value", "label", "placeholder"];
 
+// Controls that hold a choice or an action, not something the user typed:
+// their label may say "Show password" or "Remember my email", but their
+// value ("on", a button caption) is never the secret itself.
+const NON_TEXT_INPUT_TYPES = new Set(["checkbox", "radio", "button", "submit", "reset", "image", "file", "range", "color"]);
+
+export function isTextEntry(el) {
+  const type = (el.type || "").trim().toLowerCase();
+  return el.tag === "textarea" || (el.tag === "input" && !NON_TEXT_INPUT_TYPES.has(type));
+}
+
 function structuralHits(el) {
+  // Page-structure hints only apply to fields a value is typed into. Text on
+  // buttons, links and checkboxes is still covered by the pattern finders.
+  if (!isTextEntry(el)) return [];
   const out = [];
   const value = el.value || "";
   const span = value ? [0, value.length] : null;

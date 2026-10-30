@@ -374,3 +374,16 @@ def test_page_side_executor_refuses_password_typing_without_a_grant(ui):
     )
     assert result == {"ok": False, "error": "This action requires your approval."}
     assert shop.input_value("#password") == ""
+
+
+def test_show_password_checkbox_and_forgot_link_are_not_flagged(ui):
+    _, panel, _ = ui("signin.html")
+    panel.click("#nav-scanner")
+    panel.click("#scan-button")
+    panel.wait_for_selector("#protect-banner.ok")
+    panel.click("#nav-threats")
+    rows = panel.locator("#view-threats table tbody tr").all_text_contents()
+    # Only the real fields: email (empty here) and password (empty) have no
+    # values, so nothing on this page is a detected secret.
+    assert rows == []
+    assert panel.text_content("#category-grid [data-category=PASSWORD] .cat-count") == "0"
