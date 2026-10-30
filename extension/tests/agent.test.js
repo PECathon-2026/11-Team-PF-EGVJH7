@@ -55,7 +55,7 @@ test("Gemini errors become readable messages", async () => {
 test("model output with blank fields or a one-element array is accepted", () => {
   const view = { elements: [] };
   const blank = parseAction('{"type":"scroll","element_id":"","text":"","url":"","reason":"look"}');
-  assert.deepEqual(blank, { type: "scroll", element_id: null, text: null, url: null, reason: "look" });
+  assert.deepEqual(blank, { type: "scroll", element_id: null, text: null, secret_ref: null, url: null, reason: "look" });
   assert.equal(validateAction(blank, view, new Map()).ok, true);
   assert.equal(parseAction('[{"type":"done","reason":"ok"}]').type, "done");
   assert.throws(() => parseAction('[{"type":"done"},{"type":"done"}]'));

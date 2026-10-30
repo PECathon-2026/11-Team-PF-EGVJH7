@@ -88,7 +88,8 @@ def ui(extension_context, testlab_server):
         panel.on("console", lambda m: m.type == "error" and errors.append(m.text))
         panel.on("pageerror", lambda e: errors.append(str(e)))
         panel.goto(f"chrome-extension://{extension_id}/src/sidepanel/panel.html")
-        panel.evaluate("() => chrome.storage.local.clear()")  # default settings for each test
+        # Default settings and an empty profile/session for each test.
+        panel.evaluate("() => Promise.all([chrome.storage.local.clear(), chrome.storage.session.clear()])")
         tab_id = panel.evaluate("async (url) => (await chrome.tabs.query({url})).at(-1).id", f"{testlab_server}/{page_name}")
         panel.goto(f"chrome-extension://{extension_id}/src/sidepanel/panel.html?tab={tab_id}")
         panel.wait_for_selector("#firewall-status")
@@ -303,3 +304,73 @@ def test_typing_real_card_needs_approval_and_ai_only_sees_synthetic(ui, approve)
     else:
         assert out["status"] == "blocked"
         assert shop.input_value("#card2") == ""                 # nothing typed
+
+
+def _approve_until_done(panel, approvals=2):
+    for _ in range(approvals):
+        panel.wait_for_selector("dialog#approval[open]", timeout=15000)
+        panel.click("#dialog-approve")
+    panel.wait_for_selector("#status.ok", timeout=15000)
+
+
+def test_agent_signs_in_with_your_details_without_the_ai_seeing_them(ui):
+    real = {"email": "priya.real@corp.test", "password": "Real-Pa55word!"}
+    shop, panel, _ = ui("signin.html")
+
+    panel.click("#nav-settings")
+    for key, value in real.items():
+        panel.fill(f"#profile-{key}", value)
+        panel.press(f"#profile-{key}", "Tab")
+        panel.wait_for_selector(f"label:has(#profile-{key}) .chip-ok")
+
+    panel.click("#nav-agent")
+    panel.fill("#task", "Sign in to my account")
+    panel.click("#run")
+    _approve_until_done(panel)  # password entry, then form submission
+
+    assert shop.evaluate("window.__submitted") == real
+    assert shop.is_visible("#result")
+
+    # Nothing the AI received, and nothing in the ledger, contains the real values.
+    panel.click("#nav-scanner")
+    payload = panel.text_content("#ai-payload")
+    panel.click("#nav-ledger")
+    ledger = panel.text_content("#ledger")
+    panel.click("#nav-settings")
+    settings_text = panel.text_content("#view-settings")
+    for value in real.values():
+        assert value not in payload and value not in ledger and value not in settings_text, value
+
+
+def test_agent_registers_with_the_synthetic_identity(ui):
+    shop, panel, _ = ui("register.html")
+    identity = panel.evaluate("async () => (await chrome.storage.session.get('syntheticIdentity')).syntheticIdentity")
+
+    panel.click("#nav-agent")
+    panel.fill("#task", "Create an account")
+    panel.click("#run")
+    _approve_until_done(panel)
+
+    submitted = shop.evaluate("window.__submitted")
+    assert submitted == {
+        "name": identity["full_name"], "email": identity["email"], "phone": identity["phone"],
+        "address": identity["address"], "password": identity["password"],
+    }
+    assert identity["email"].endswith("@example.com")
+
+
+def test_page_side_executor_refuses_password_typing_without_a_grant(ui):
+    """Defense in depth: even a direct message cannot type a password unapproved."""
+    shop, panel, tab_id = ui("signin.html")
+    result = panel.evaluate(
+        """async (tabId) => {
+            await chrome.scripting.executeScript({target: {tabId}, files: ['src/content/content.js']});
+            const {snapshot} = await chrome.tabs.sendMessage(tabId, {cmd: 'snapshot'});
+            const pw = snapshot.elements.find((e) => e.type === 'password');
+            return chrome.tabs.sendMessage(tabId, {cmd: 'execute', snapshotId: snapshot.snapshotId,
+                action: {type: 'type', element_id: pw.id, text: 'stolen-guess'}, grant: null});
+        }""",
+        tab_id,
+    )
+    assert result == {"ok": False, "error": "This action requires your approval."}
+    assert shop.input_value("#password") == ""

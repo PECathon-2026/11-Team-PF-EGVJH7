@@ -16,6 +16,7 @@ import { luhnOk } from "./patterns.js";
 import { classifyRisk, parseAction, validateAction, PolicyError } from "./policy.js";
 import { sanitizeSnapshot, mask, AmbiguousCredentialTask } from "./sanitize.js";
 import { SyntheticVault, RESTORE_NEEDS_APPROVAL } from "./synthetic.js";
+import { PROFILE_FIELDS, fieldDef } from "./profile.js";
 
 export { guardedFetch };
 
@@ -127,7 +128,24 @@ export function firewallSelfTest() {
  * P2 + P3 on one snapshot. Pure (no messaging), so the "Scan" button, the
  * agent loop and the tests all run exactly the same code.
  */
-export function scanPage(snapshot, { settings = DEFAULT_SETTINGS, task = "", vault = new SyntheticVault({ redactTypes: settings.redactTypes }), history = [] } = {}) {
+/**
+ * The profile as the AI may see it: synthetic stand-ins, [SECRET] markers for
+ * values it can only reference, plain values for non-sensitive fields.
+ * Real values were registered with the vault by sanitizeSnapshot first.
+ */
+function profileView(profile, vault) {
+  const view = {};
+  for (const def of PROFILE_FIELDS) {
+    const value = profile[def.key];
+    if (!value) continue;
+    if (def.exposure === "secret") view[def.key] = `[SECRET: use secret_ref "${def.key}"]`;
+    else if (def.exposure === "synthetic") view[def.key] = vault.substitute(def.type, value);
+    else view[def.key] = value;
+  }
+  return view;
+}
+
+export function scanPage(snapshot, { settings = DEFAULT_SETTINGS, task = "", vault = new SyntheticVault({ redactTypes: settings.redactTypes }), history = [], profile = {} } = {}) {
   const honeytoken = makeHoneytoken();
   const withToken = {
     ...snapshot,
@@ -142,6 +160,7 @@ export function scanPage(snapshot, { settings = DEFAULT_SETTINGS, task = "", vau
     task,
     dropInvisible: settings.invisibleFilter,
     quarantineInjections: settings.injectionProtection,
+    known: PROFILE_FIELDS.filter((d) => d.type && profile[d.key]).map((d) => ({ type: d.type, value: profile[d.key] })),
   });
   const honeytokenOk = !leaksAny(sanitized.aiView, [honeytoken]);
 
@@ -151,7 +170,7 @@ export function scanPage(snapshot, { settings = DEFAULT_SETTINGS, task = "", vau
 
   const inventory = [...new Set([...sanitized.inventory, honeytoken])];
   const allowedSynthetic = vault.syntheticValues;
-  const request = { ...sanitized.aiView, history };
+  const request = { ...sanitized.aiView, profile: profileView(profile, vault), history };
   const egress = honeytokenOk
     ? validateOutgoing(request, inventory, { allowedSynthetic })
     : { ok: false, reasons: ["Honeytoken survived sanitization."], leakCount: 1 };
@@ -230,7 +249,7 @@ function tabTransport(tabId) {
  */
 export async function runAgent({
   tabId, task, mode = "mock", apiKey, model, maxSteps = 6, signal, ui, ledger, send, agent,
-  settings = DEFAULT_SETTINGS,
+  settings = DEFAULT_SETTINGS, profile = {}, profileSource = {},
 }) {
   send ??= tabTransport(tabId);
   ledger ??= new AuditLedger();
@@ -270,7 +289,7 @@ export async function runAgent({
     stage("sanitize", "active");
     let scan;
     try {
-      scan = scanPage(snapshot, { settings, task, vault, history });
+      scan = scanPage(snapshot, { settings, task, vault, history, profile });
     } catch (err) {
       stage("sanitize", "blocked", err.message);
       if (err instanceof AmbiguousCredentialTask) return finish("blocked", err.message);
@@ -349,7 +368,22 @@ export async function runAgent({
     let realText = action.text;
     let restoredTypes = [];
     let restored = [];
-    if (action.text != null) ({ text: realText, restoredTypes, restored } = vault.restore(action.text));
+    let restoredKeys = [];
+    if (action.secret_ref != null) {
+      // The AI referenced a profile value it never saw; resolve it locally.
+      const def = fieldDef(action.secret_ref);
+      realText = profile[action.secret_ref];
+      if (!realText) {
+        stage("validate", "blocked", `No ${def.label.toLowerCase()} in your profile`);
+        return finish("blocked", `Your profile has no ${def.label.toLowerCase()}. Add it in Settings → My details.`);
+      }
+      restoredTypes = [def.type];
+      restored = [{ type: def.type, real: realText }];
+      restoredKeys = [action.secret_ref];
+    } else if (action.text != null) {
+      ({ text: realText, restoredTypes, restored } = vault.restore(action.text));
+      restoredKeys = PROFILE_FIELDS.filter((d) => profile[d.key] && restored.some((r) => r.real === profile[d.key])).map((d) => d.key);
+    }
     const restoreNeedsApproval = restoredTypes.some((t) => RESTORE_NEEDS_APPROVAL.has(t));
     const needsApproval = decision.needsApproval || restoreNeedsApproval;
     ui.event("action", { step, action, decision: needsApproval ? "needs_approval" : "allowed" });
@@ -368,7 +402,10 @@ export async function runAgent({
         why: decision.needsApproval ? decision.reason : `Fills your real ${restoredTypes.join(", ")} into the page.`,
         risk: classifyRisk(raw, restoredTypes),
         agentReason: action.reason,
-        uses: restored.map((r) => ({ type: r.type, masked: mask(r.real) })),
+        uses: restored.map((r) => {
+          const key = restoredKeys.find((k) => profile[k] === r.real);
+          return { type: r.type, masked: mask(r.real), source: key ? profileSource[key] || "you" : "page" };
+        }),
         fills: restoreNeedsApproval ? mask(realText) : null,
       };
       const approved = await ui.requestApproval(card);

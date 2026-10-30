@@ -11,10 +11,10 @@ const STAGE_HINT = {
   execute: "Page-side executor re-checks",
 };
 const EXAMPLES = [
-  "Find a product under ₹2,000",
+  "Sign in to my account",
+  "Create an account",
   "Fill in the registration form",
-  "Navigate to the checkout page",
-  "Find the support phone number on this page",
+  "Go to the cart and pay",
   "Complete the checkout and pay",
 ];
 const DECISION = {
@@ -27,7 +27,7 @@ const DECISION = {
 export function agentView(store, ctl) {
   const modeBanner = h("div");
   const task = h("textarea", { id: "task", rows: 3, placeholder: "Describe a task in plain language…", "aria-label": "Task" });
-  const steps = h("input", { id: "max-steps", type: "number", min: 1, max: 10, value: "6", "aria-label": "Maximum steps" });
+  const steps = h("input", { id: "max-steps", type: "number", min: 1, max: 20, value: "12", "aria-label": "Maximum steps" });
   const run = h("button", { class: "btn btn-primary grow", id: "run", onclick: () => ctl.runTask(task.value) }, icon("play"), "Run privately");
   const stop = h("button", { class: "btn", id: "stop", onclick: () => ctl.stop() }, icon("stop"), "Stop");
   const status = h("div", { class: "status", id: "status", role: "status", "aria-live": "polite" });
@@ -68,9 +68,9 @@ export function agentView(store, ctl) {
           icon("lock"),
           h("div", {},
             h("strong", { text: "Offline mock agent" }),
-            h("div", { class: "small", text: "A deterministic local planner (scroll, then click the control matching your task). No network, no real AI reasoning; use it to demonstrate the privacy pipeline." }))));
+            h("div", { class: "small", text: "A local rule-based planner: fills empty form fields from Settings → My details (or the synthetic test identity), then clicks the button matching your task, following links across pages. No network and no real AI reasoning." }))));
 
-    if (document.activeElement !== steps) steps.value = String(S.settings.maxSteps ?? 6);
+    if (document.activeElement !== steps) steps.value = String(S.settings.maxSteps);
     run.disabled = S.agent.running;
     stop.disabled = !S.agent.running;
     status.textContent = S.agent.status.text;

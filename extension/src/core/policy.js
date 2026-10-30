@@ -2,6 +2,8 @@
 // and the consequential-action rules from core/browser/executor.py, extended
 // with a real human-approval path instead of a permanent block.
 
+import { PROFILE_KEYS, fieldDef } from "./profile.js";
+
 const RISKY_OPERATIONS =
   /(?:^|[^a-z0-9])(?:delete|remove|submit|purchase|buy|transfer|pay|logout|logoff|cancel|destroy|deactivate|withdraw|refund)(?:$|[^a-z0-9])/i;
 const RISKY_QUERY_KEYS = new Set(["action", "operation", "op", "intent", "command", "cmd", "do", "method"]);
@@ -13,7 +15,7 @@ export const SENSITIVE_BUTTON_WORDS = [
 ];
 
 export const ACTION_TYPES = new Set(["click", "type", "select", "scroll", "navigate", "done"]);
-const ACTION_KEYS = new Set(["type", "element_id", "text", "url", "reason"]);
+const ACTION_KEYS = new Set(["type", "element_id", "text", "secret_ref", "url", "reason"]);
 
 export class PolicyError extends Error {}
 
@@ -79,6 +81,9 @@ export function classifyRisk(element, restoredTypes = []) {
   if (restoredTypes.includes("AADHAAR") || restoredTypes.includes("PAN")) {
     return { level: "critical", label: "Critical · government identity document" };
   }
+  if (restoredTypes.includes("PASSWORD")) {
+    return { level: "high", label: "High · credential entry" };
+  }
   if (DESTRUCTIVE_WORDS.some((w) => description.includes(w))) {
     return { level: "high", label: "High · irreversible action" };
   }
@@ -104,7 +109,7 @@ export function parseAction(candidate) {
     if (!ACTION_KEYS.has(key)) throw new PolicyError("Agent response contains unsupported fields.");
   }
   if (!ACTION_TYPES.has(candidate.type)) throw new PolicyError("Unsupported action type.");
-  for (const key of ["element_id", "text", "url", "reason"]) {
+  for (const key of ["element_id", "text", "secret_ref", "url", "reason"]) {
     if (candidate[key] != null && typeof candidate[key] !== "string") {
       throw new PolicyError(`Field ${key} must be a string.`);
     }
@@ -116,7 +121,8 @@ export function parseAction(candidate) {
   return {
     type: candidate.type,
     element_id: blankToNull(candidate.element_id),
-    text: candidate.type === "type" ? candidate.text ?? null : blankToNull(candidate.text),
+    text: candidate.type === "type" && !candidate.secret_ref ? candidate.text ?? null : blankToNull(candidate.text),
+    secret_ref: blankToNull(candidate.secret_ref),
     url: blankToNull(candidate.url),
     reason: (candidate.reason ?? "").slice(0, 300),
   };
@@ -129,6 +135,7 @@ export function parseAction(candidate) {
 export function validateAction(action, aiView, rawById) {
   const deny = (reason) => ({ ok: false, needsApproval: false, reason });
   const allow = (needsApproval = false, reason = "") => ({ ok: true, needsApproval, reason });
+  if (action.secret_ref != null && action.type !== "type") return deny("Secret references are only valid for typing.");
 
   if (action.type === "done") {
     return action.element_id || action.url || action.text != null ? deny("Done action contains extra payload.") : allow();
@@ -157,10 +164,22 @@ export function validateAction(action, aiView, rawById) {
     return allow();
   }
   if (action.type === "type") {
+    const inputType = (raw.type || "").toLowerCase();
     if (!["input", "textarea"].includes(raw.tag)) return deny("Typing is restricted to input and textarea elements.");
-    if (["password", "hidden"].includes((raw.type || "").toLowerCase())) return deny("Password and hidden inputs are never typed by the agent.");
+    if (inputType === "hidden") return deny("Hidden inputs are never typed by the agent.");
     if (raw.attrs?.readonly) return deny("Element is read-only.");
-    if (action.text == null || action.url) return deny("Type action requires text only.");
+    if (action.url) return deny("Type action contains a URL.");
+    if (action.secret_ref != null) {
+      // A reference to a profile value the AI never saw; the extension types it.
+      if (action.text != null) return deny("Provide either text or secret_ref, not both.");
+      if (!PROFILE_KEYS.has(action.secret_ref)) return deny("Unknown secret reference.");
+      const def = fieldDef(action.secret_ref);
+      if (inputType === "password" && action.secret_ref !== "password") return deny("Only the password may go into a password field.");
+      if (def.approval) return allow(true, `Enters your ${def.label.toLowerCase()} into the page.`);
+      return allow();
+    }
+    if (inputType === "password") return deny("Password fields only accept the saved password (secret_ref).");
+    if (action.text == null) return deny("Type action requires text or secret_ref.");
     return allow();
   }
   if (action.type === "select") {

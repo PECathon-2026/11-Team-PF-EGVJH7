@@ -134,6 +134,8 @@
       if (href && RISKY_URL.test(decodeURIComponent(href))) return true;
     }
     if ((action.type === "type" || action.type === "select") && luhnCard(action.text || "")) return true;
+    // Passwords are only ever typed with an explicit, single-use approval.
+    if (action.type === "type" && el.type === "password") return true;
     return false;
   }
 
@@ -176,7 +178,8 @@
     if (action.type === "click") {
       el.click();
     } else if (action.type === "type") {
-      if (!el.matches("input, textarea") || el.type === "password" || el.readOnly) {
+      // A password field is only reachable here after the grant check above.
+      if (!el.matches("input, textarea") || el.type === "hidden" || el.readOnly) {
         throw new Error("Element cannot be typed into.");
       }
       el.focus();

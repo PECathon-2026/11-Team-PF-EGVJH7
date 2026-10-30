@@ -29,6 +29,29 @@ Requires Chrome/Edge 116+. Firefox is not supported (no side-panel API).
 | **Test Lab** | The five PS-004 scenarios against `testlab/pages`: expected vs actual, pass/fail/not-supported per check, evidence | `scenarios.js` + the real pipeline |
 | **Settings** | Protection toggles, Gemini key/model/connection test, local-only mode, per-site access and revocation, never-send list, strict redaction, retention, theme | `chrome.storage`, `chrome.permissions` |
 
+## Filling forms (sign in, register, checkout)
+
+The agent fills forms from **Settings → My details**. Leave a field empty and,
+with *Use a synthetic test identity* on (the default), a fake value is used
+instead, so the agent works out of the box on test sites.
+
+| Field | What the AI sees | Typed on the page | Approval |
+| --- | --- | --- | --- |
+| Name, email, phone, address | synthetic stand-in | your real value (swapped in locally) | no |
+| Card number | synthetic Luhn-valid card | your real card | **yes** |
+| Card expiry | as is (not sensitive alone) | as is | no |
+| Username | `[SECRET]`, referenced as `secret_ref` | your real value | no |
+| Password, CVV | `[SECRET]`, referenced as `secret_ref` | your real value | **yes** |
+
+Form submissions (e.g. *Sign in*, *Create account*) also need **Approve once**.
+Password fields accept nothing but the saved password, and the page-side
+executor refuses to type into one without a valid grant. Details are kept in
+`chrome.storage.session` (memory only) and never appear in the UI unmasked,
+in the ledger, or in anything sent to the AI.
+
+Try it: `python testlab/serve.py`, open <http://127.0.0.1:8000/signin.html> or
+`register.html`, and run *Sign in to my account* / *Create an account*.
+
 ## Running the five PS-004 scenarios
 
 1. From the repository root: `python testlab/serve.py` (serves `testlab/pages` on port 8000).
@@ -99,8 +122,10 @@ service worker: opens the panel, mirrors the firewall state on the toolbar badge
   and its request building, error handling and egress check are unit-tested
   with a mocked API. It has **not yet been run against the live API** (no key
   was available): do one real run with your key before the demo.
-- The mock agent is a deterministic demo planner (scroll, then click the
-  control matching the task, following links across pages), not AI reasoning.
+- The offline agent is a rule-based planner (fill empty fields from My details,
+  then click the control matching the task, following links across pages). It
+  only understands labelled form fields; open-ended tasks such as "find a product
+  under ₹2,000" need Gemini.
 - The ledger is per session (memory only); there is no persistent log by design.
 
 Multi-page tasks work: the content script is re-attached after every
@@ -109,9 +134,9 @@ navigation (verified end to end: catalog → checkout → approval).
 ## Tests
 
 ```sh
-cd extension && npm test                          # 44 unit tests (Node ≥ 20)
+cd extension && npm test                          # 51 unit tests (Node ≥ 20)
 python -m pytest tests/test_extension_parity.py   # JS == Python detectors and risk score
-python -m pytest tests/test_extension_e2e.py      # real Chromium + real extension, 14 tests
+python -m pytest tests/test_extension_e2e.py      # real Chromium + real extension, 17 tests
 python -m pytest                                  # everything (Python + parity + E2E)
 ```
 

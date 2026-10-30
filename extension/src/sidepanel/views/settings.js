@@ -1,8 +1,12 @@
 import { h, icon, chip, card, empty, time, setChildren, toggle } from "../ui.js";
+import { PROFILE_FIELDS } from "../../core/profile.js";
+
+const SECRET_INPUT = new Set(["password", "cvv", "card_number"]);
 
 export function settingsView(store, ctl) {
   const protection = h("div");
   const ai = h("div");
+  const details = h("div");
   const sites = h("div");
   const data = h("div");
   const appearance = h("div");
@@ -15,6 +19,7 @@ export function settingsView(store, ctl) {
   const root = h("div", { class: "view" },
     card("Protection", protection),
     card("AI configuration", ai),
+    card("My details (autofill)", details),
     card("Website permissions", sites),
     card("Data handling", data),
     card("Appearance", appearance),
@@ -32,7 +37,7 @@ export function settingsView(store, ctl) {
   function update(S) {
     const s = S.settings;
     // Rebuild only when something shown here changed (keeps open selects open).
-    const key = JSON.stringify([s, S.tab.origin, S.tab.access, S.tab.web, S.apiKeySet, S.gemini, originsLoaded, origins]);
+    const key = JSON.stringify([s, S.tab.origin, S.tab.access, S.tab.web, S.apiKeySet, S.gemini, originsLoaded, origins, S.profile]);
     if (key === lastKey) return;
     lastKey = key;
     const set = (patch) => ctl.updateSettings(patch);
@@ -62,6 +67,31 @@ export function settingsView(store, ctl) {
         h("button", { class: "btn btn-sm", id: "test-connection", disabled: !S.apiKeySet, onclick: () => ctl.testConnection() }, icon("link", 12), "Test connection"),
         S.gemini ? chip(S.gemini.message, S.gemini.ok ? "ok" : S.gemini.ok === false ? "bad" : "info") : null),
       h("p", { class: "muted tiny", text: "The connection test reads the model's metadata only; it sends no page data." }));
+
+    setChildren(details,
+      h("p", { class: "muted small", text: "What the agent types into forms. The AI never sees these values: it gets synthetic stand-ins, and password, username and CVV only as references. Stored in memory only (chrome.storage.session), cleared when the browser closes." }),
+      toggle({ id: "set-synthetic-identity", checked: s.useSyntheticIdentity, label: "Use a synthetic test identity for empty fields",
+        hint: "Lets the agent fill forms without your real details. Fake data: fine for test sites, not for real accounts.",
+        onChange: (v) => set({ useSyntheticIdentity: v }) }),
+      h("div", { class: "profile-grid" }, ...PROFILE_FIELDS.map((f) => {
+        const own = S.profile.own[f.key];
+        const synthetic = s.useSyntheticIdentity ? S.profile.synthetic[f.key] : null;
+        const input = h("input", {
+          id: `profile-${f.key}`, type: SECRET_INPUT.has(f.key) ? "password" : "text",
+          autocomplete: "off", spellcheck: false, "aria-label": f.label,
+          placeholder: own ? "Saved: type to replace" : synthetic ? `Synthetic: ${SECRET_INPUT.has(f.key) ? "••••••" : synthetic}` : "Not set",
+        });
+        input.addEventListener("change", () => { const v = input.value.trim(); input.value = ""; if (v) ctl.saveProfileField(f.key, v); });
+        return h("label", { class: "profile-field" },
+          h("span", { class: "profile-label" },
+            h("span", { class: "small", text: f.label }),
+            own ? chip(`Yours · ${own}`, "ok") : synthetic ? chip("Synthetic", "info") : chip("Empty", "neutral"),
+            own ? h("button", { class: "btn btn-sm", type: "button", text: "Remove", onclick: (e) => { e.preventDefault(); ctl.saveProfileField(f.key, ""); } }) : null),
+          input);
+      })),
+      h("div", { class: "row gap wrap" },
+        h("button", { class: "btn btn-sm", id: "new-identity", text: "New synthetic identity", onclick: () => ctl.newSyntheticIdentity() }),
+        h("button", { class: "btn btn-sm", id: "clear-profile", text: "Clear my details", onclick: () => ctl.clearProfile() })));
 
     const blocked = s.blockedSites.includes(S.tab.host);
     setChildren(sites,

@@ -109,6 +109,7 @@ export const DEFAULT_SANITIZE_OPTIONS = Object.freeze({
   task: "",
   dropInvisible: true,
   quarantineInjections: true,
+  known: [], // [{type, value}] e.g. the autofill profile, registered before the page
 });
 
 /**
@@ -121,7 +122,7 @@ export const DEFAULT_SANITIZE_OPTIONS = Object.freeze({
  *   real values and must stay local; rows only hold masked values.
  */
 export function sanitizeSnapshot(snapshot, detections, vault, options = {}) {
-  const { task, dropInvisible, quarantineInjections } = { ...DEFAULT_SANITIZE_OPTIONS, ...options };
+  const { task, dropInvisible, quarantineInjections, known } = { ...DEFAULT_SANITIZE_OPTIONS, ...options };
   const realToFake = new Map();
   const rows = [];
   const fields = new Map(); // one display row per element field
@@ -134,6 +135,9 @@ export function sanitizeSnapshot(snapshot, detections, vault, options = {}) {
     if (!realToFake.has(real)) realToFake.set(real, fake);
     return realToFake.get(real);
   };
+
+  // Profile values are protected wherever they appear, detected or not.
+  for (const { type, value } of known) register(type, value);
 
   const byElement = new Map();
   for (const d of detections) {
