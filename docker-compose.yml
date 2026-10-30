@@ -1,0 +1,11 @@
+# One-command, isolated test run:
+#   docker compose up --build --exit-code-from tests
+# (docker-compose v1 accepts the same arguments.)
+services:
+  tests:
+    build: .
+    image: privacylens-tests
+    environment:
+      PRIVACYLENS_MOCK_LLM: "1"
+    # Chromium needs more than Docker's default 64 MB of /dev/shm.
+    shm_size: "1gb"

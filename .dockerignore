@@ -1,0 +1,23 @@
+# Keep the build context small and free of local secrets.
+.git
+.github
+.venv
+venv
+env
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.env
+.env.*
+!.env.example
+.vault.json
+*.pem
+*.key
+results/*
+!results/.gitkeep
+test_results.txt
+*.bak
+.vscode
+.idea
