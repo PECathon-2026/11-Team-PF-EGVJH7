@@ -95,17 +95,23 @@ service worker: opens the panel, mirrors the firewall state on the toolbar badge
 - No person-name detection (no NER model).
 - Only the top-level frame is covered; card fields inside third-party iframes
   (e.g. hosted payment forms) are not seen.
-- Gemini mode is implemented but was **not tested against the live API** (no key
-  available during development); the offline mock agent is fully tested.
-- The mock agent is a deterministic demo planner, not AI reasoning.
+- Gemini mode sends a `responseSchema` so replies have the exact action shape,
+  and its request building, error handling and egress check are unit-tested
+  with a mocked API. It has **not yet been run against the live API** (no key
+  was available): do one real run with your key before the demo.
+- The mock agent is a deterministic demo planner (scroll, then click the
+  control matching the task, following links across pages), not AI reasoning.
 - The ledger is per session (memory only); there is no persistent log by design.
+
+Multi-page tasks work: the content script is re-attached after every
+navigation (verified end to end: catalog → checkout → approval).
 
 ## Tests
 
 ```sh
-cd extension && npm test                          # 36 unit tests (Node ≥ 20)
+cd extension && npm test                          # 44 unit tests (Node ≥ 20)
 python -m pytest tests/test_extension_parity.py   # JS == Python detectors and risk score
-python -m pytest tests/test_extension_e2e.py      # real Chromium + real extension, 11 tests
+python -m pytest tests/test_extension_e2e.py      # real Chromium + real extension, 14 tests
 python -m pytest                                  # everything (Python + parity + E2E)
 ```
 

@@ -96,6 +96,7 @@ export function parseAction(candidate) {
       throw new PolicyError("Agent response is not valid JSON.");
     }
   }
+  if (Array.isArray(candidate) && candidate.length === 1) candidate = candidate[0];
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
     throw new PolicyError("Agent response must be a JSON object.");
   }
@@ -108,11 +109,15 @@ export function parseAction(candidate) {
       throw new PolicyError(`Field ${key} must be a string.`);
     }
   }
+  // Models often send "" for fields that do not apply; treat that as absent
+  // so a valid scroll/done is not rejected for "extra payload". (An empty
+  // string is still kept for `type` actions, where clearing a field is valid.)
+  const blankToNull = (v) => (v === "" ? null : v ?? null);
   return {
     type: candidate.type,
-    element_id: candidate.element_id ?? null,
-    text: candidate.text ?? null,
-    url: candidate.url ?? null,
+    element_id: blankToNull(candidate.element_id),
+    text: candidate.type === "type" ? candidate.text ?? null : blankToNull(candidate.text),
+    url: blankToNull(candidate.url),
     reason: (candidate.reason ?? "").slice(0, 300),
   };
 }

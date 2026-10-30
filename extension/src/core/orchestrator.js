@@ -193,15 +193,46 @@ export async function sendToTab(tabId, message) {
 }
 
 /**
+ * Wait for any navigation in the tab to finish, then (re-)inject the content
+ * script. Injected scripts do not survive navigation, so this runs before
+ * every snapshot; content.js ignores repeated injection on the same page.
+ */
+export async function attachToPage(tabId, { timeoutMs = 15_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.status === "complete") break;
+    if (Date.now() > deadline) throw new Error("The page did not finish loading.");
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["src/content/content.js"] });
+  } catch {
+    throw new Error("PrivacyLens cannot read this page (no access, or not an http(s) page).");
+  }
+}
+
+// Default transport: re-attach before every snapshot so multi-page tasks work.
+function tabTransport(tabId) {
+  return async (msg) => {
+    if (msg.cmd === "snapshot") await attachToPage(tabId);
+    return sendToTab(tabId, msg);
+  };
+}
+
+/**
  * @param opts.tabId, task, mode ("mock"|"gemini"), apiKey, model, maxSteps, signal, settings
  * @param opts.ui {event(kind, data), requestApproval(card) -> Promise<boolean>}
  * @param opts.send optional transport override (tests)
+ * @param opts.agent optional planner `(request) => action` replacing the mock
+ *   agent (tests); its output goes through the same parsing, policy, approval
+ *   and executor checks as any model's.
  */
 export async function runAgent({
-  tabId, task, mode = "mock", apiKey, model, maxSteps = 6, signal, ui, ledger, send,
+  tabId, task, mode = "mock", apiKey, model, maxSteps = 6, signal, ui, ledger, send, agent,
   settings = DEFAULT_SETTINGS,
 }) {
-  send ??= (msg) => sendToTab(tabId, msg);
+  send ??= tabTransport(tabId);
   ledger ??= new AuditLedger();
   const vault = new SyntheticVault({ redactTypes: settings.redactTypes });
   const history = [];
@@ -273,7 +304,9 @@ export async function runAgent({
     stage("reason", "active", mode === "gemini" ? `Asking ${model}` : "Offline mock agent");
     let action;
     try {
-      const raw = mode === "gemini"
+      const raw = agent
+        ? await agent(scan.request)
+        : mode === "gemini"
         ? await geminiAgent(scan.request, {
             apiKey, model, inventory: scan.inventory, allowedSynthetic: scan.allowedSynthetic, signal,
             onCheck: (v) => ui.event("egress", { ok: v.ok, reasons: v.reasons, kind: "http", step }),
@@ -367,7 +400,9 @@ export async function runAgent({
     stage("execute", "done");
     ui.event("executed", { step, ok: true, action: action.type });
     await ledger.append("executed", { step, type: action.type, element_id: action.element_id });
-    history.push({ type: action.type, element_id: action.element_id, ok: true });
+    // `page` is the sanitized origin+path the AI already saw: element ids are
+    // only meaningful per page once tasks span several pages.
+    history.push({ type: action.type, element_id: action.element_id, page: scan.sanitized.aiView.url, ok: true });
 
     // Let navigation / re-render settle before the next snapshot.
     await new Promise((r) => setTimeout(r, 600));

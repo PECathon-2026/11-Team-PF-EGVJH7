@@ -247,3 +247,59 @@ def test_all_five_ps004_scenarios(ui, testlab_server):
     # Partial means only unsupported checks remain, never a failure.
     assert panel.locator("#scenario-video .check.fail").count() == 0
     assert panel.locator("#scenario-video .check.unsupported").count() == 2
+
+
+def test_multi_page_task_follows_link_and_still_asks_before_paying(ui, testlab_server):
+    """Regression: the content script must be re-attached after navigation."""
+    shop, panel, _ = ui("catalog.html")
+    _run_until_approval(panel, task="Go to the cart and pay")
+
+    assert shop.url.endswith("/checkout.html"), "agent did not navigate"
+    assert "Pay Now" in panel.text_content("dialog#approval")
+    shop.evaluate(TRACK_PAY_CLICKS_JS)
+    panel.click("#dialog-approve")
+    panel.wait_for_selector("#status.ok", timeout=15000)
+    assert shop.evaluate("window.__payClicks") == 1
+
+
+# Runs runAgent inside the side panel with a planner that copies the card it
+# was shown (a synthetic one) into a confirmation field, through the real
+# loop: sanitize -> policy -> approval -> restore -> page-side executor.
+TYPING_RUN_JS = """async ({tabId, approve}) => {
+    const { runAgent } = await import('/src/core/orchestrator.js');
+    let card = null;
+    const seen = [];
+    const result = await runAgent({
+        tabId, task: 'Confirm my card number',
+        agent: (request) => {
+            if (request.history.length) return {type: 'done', reason: 'Filled.'};
+            const source = request.elements.find((e) => e.label === 'Card number');
+            const target = request.elements.find((e) => e.placeholder === 'Re-enter card');
+            seen.push(source.value);
+            return {type: 'type', element_id: target.id, text: source.value, reason: 'Confirm the card.'};
+        },
+        ui: { event() {}, requestApproval: async (c) => { card = c; return approve; } },
+    });
+    return { status: result.status, seen, risk: card?.risk.level, uses: card?.uses };
+}"""
+
+ADD_CONFIRM_FIELD_JS = """() => document.querySelector('form').insertAdjacentHTML('beforeend',
+    '<label for="card2">Confirm card</label><input id="card2" placeholder="Re-enter card">')"""
+
+
+@pytest.mark.parametrize("approve", [True, False])
+def test_typing_real_card_needs_approval_and_ai_only_sees_synthetic(ui, approve):
+    shop, panel, tab_id = ui()
+    shop.evaluate(ADD_CONFIRM_FIELD_JS)
+
+    out = panel.evaluate(TYPING_RUN_JS, {"tabId": tab_id, "approve": approve})
+
+    assert out["seen"] and out["seen"][0] != REAL_CARD          # the AI saw a synthetic card
+    assert out["risk"] == "critical"
+    assert out["uses"][0]["type"] == "CARD" and REAL_CARD not in out["uses"][0]["masked"]
+    if approve:
+        assert out["status"] == "completed"
+        assert shop.input_value("#card2") == REAL_CARD          # real value typed on the page
+    else:
+        assert out["status"] == "blocked"
+        assert shop.input_value("#card2") == ""                 # nothing typed
