@@ -6,7 +6,16 @@
   <div class="participant">
     <p>Name: <span id="p1-name">Alice Smith</span></p>
     <p>Email: <span id="p1-email">alice.smith@example.com</span></p>
-    <div class="video-feed">[Video Feed Placeholder]</div>
+    <canvas id="p1-video" class="video-feed" width="320" height="180" aria-label="Alice's camera"></canvas>
   </div>
+  <script>
+    // Test fixture: paint a stand-in camera frame (no media files needed).
+    const ctx = document.getElementById("p1-video").getContext("2d");
+    const g = ctx.createLinearGradient(0, 0, 320, 180);
+    g.addColorStop(0, "#3a6df0"); g.addColorStop(1, "#9b5de5");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, 320, 180);
+    ctx.fillStyle = "#ffd6a5"; ctx.beginPath(); ctx.arc(160, 80, 38, 0, Math.PI * 2); ctx.fill();
+    ctx.fillRect(105, 125, 110, 55);
+  </script>
 </body>
 </html>

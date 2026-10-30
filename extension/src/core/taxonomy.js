@@ -13,8 +13,12 @@ export const CATEGORIES = [
   { id: "PHONE", label: "Phone numbers", severity: "medium", supported: true },
   { id: "IP", label: "IP addresses", severity: "low", supported: true },
   {
+    id: "PERSON", label: "Personal names", severity: "medium", supported: true,
+    note: "From labels (Name:, Host:, Speaker:) and name fields; unlabelled names in free text are not detected.",
+  },
+  {
     id: "OTHER", label: "Other contextual PII", severity: "medium", supported: true,
-    note: "Addresses via field labels. Personal names are not detected (no NER model).",
+    note: "Postal addresses, from field labels.",
   },
 ];
 
@@ -24,7 +28,8 @@ export const SEVERITY_RANK = { critical: 3, high: 2, medium: 1, low: 0 };
 export function categoryOf(type, real = "") {
   if (type === "API_KEY" && /^(eyJ|ghp_)/.test(real)) return "TOKEN";
   if (type === "CREDENTIAL" || type === "SECRET") return "PASSWORD";
-  if (["ADDRESS", "PERSON", "OTHER"].includes(type)) return "OTHER";
+  if (type === "PERSON") return "PERSON";
+  if (["ADDRESS", "OTHER"].includes(type)) return "OTHER";
   return CATEGORIES.some((c) => c.id === type) ? type : "OTHER";
 }
 

@@ -247,7 +247,7 @@ def test_all_five_ps004_scenarios(ui, testlab_server):
     assert verdicts == {"checkout": "PASS", "login": "PASS", "support": "PASS", "video": "PARTIAL", "dev": "PASS"}
     # Partial means only unsupported checks remain, never a failure.
     assert panel.locator("#scenario-video .check.fail").count() == 0
-    assert panel.locator("#scenario-video .check.unsupported").count() == 2
+    assert panel.locator("#scenario-video .check.unsupported").count() == 1  # per-face detection only
 
 
 def test_multi_page_task_follows_link_and_still_asks_before_paying(ui, testlab_server):
@@ -387,3 +387,40 @@ def test_show_password_checkbox_and_forgot_link_are_not_flagged(ui):
     # values, so nothing on this page is a detected secret.
     assert rows == []
     assert panel.text_content("#category-grid [data-category=PASSWORD] .cat-count") == "0"
+
+
+FILTERS_JS = """() => ({
+    feed: getComputedStyle(document.querySelector('#p1-video')).filter,
+    name: getComputedStyle(document.querySelector('#p1-name').closest('p')).filter,
+    email: getComputedStyle(document.querySelector('#p1-email').closest('p')).filter,
+})"""
+
+
+def test_video_shield_blurs_feeds_and_names_on_the_page(ui):
+    shop, panel, _ = ui("video.html")
+    shop.evaluate("() => document.querySelector('#p1-video').style.setProperty('filter', 'saturate(2)')")  # page's own style
+
+    panel.click("#nav-scanner")
+    panel.click("#scan-button")
+    panel.wait_for_selector("#protect-banner.ok")
+    assert "Alice Smith" not in panel.text_content("#ai-payload")  # the AI never gets the name
+
+    panel.click("#nav-overlay")
+    panel.click("label[for=video-shield-toggle]")
+    panel.wait_for_selector("#shield-status", timeout=10000)
+    filters = shop.evaluate(FILTERS_JS)
+    assert "blur(24px)" in filters["feed"]
+    assert "blur(7px)" in filters["name"]
+    assert "blur(7px)" in filters["email"]  # every detected personal detail, not just names
+
+    # A participant joining later is blurred as soon as their tile appears.
+    shop.evaluate("""() => document.querySelector('.participant').insertAdjacentHTML('beforeend',
+        '<video id="late-joiner" width="160" height="90"></video>')""")
+    shop.wait_for_function("() => getComputedStyle(document.querySelector('#late-joiner')).filter.includes('blur')")
+
+    # Turning it off restores the page exactly, including its own styles.
+    panel.click("label[for=video-shield-toggle]")
+    shop.wait_for_function("() => !document.querySelector('[data-pl-censored]')")
+    filters = shop.evaluate(FILTERS_JS)
+    assert filters["feed"] == "saturate(2)"
+    assert filters["name"] == "none" and filters["email"] == "none"

@@ -13,6 +13,7 @@ export const DEFAULT_UI_SETTINGS = Object.freeze({
   blockedSites: [],
   useSyntheticIdentity: true,
   maxSteps: 12, // a sign-up form is ~5 fields + submit + done
+  videoShield: false,
 });
 
 const idleStages = () => Object.fromEntries(STAGES.map((s) => [s, { state: "idle", detail: "" }]));

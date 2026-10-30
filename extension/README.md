@@ -20,7 +20,7 @@ Requires Chrome/Edge 116+. Firefox is not supported (no side-panel API).
 | --- | --- | --- |
 | **Overview** | Firewall on/off switch, current site and monitoring status, live counts for this page, agent connection and privacy mode, mosaic risk, activity feed | `protectionBlocker`, `scanPage`, `riskBreakdown`; switch also drives the toolbar badge via the service worker |
 | **Scanner** | *Scan Current Page*; per field, **what you see** (secrets masked in context) next to **what the AI sees**; detection method, action, format checks; the exact AI payload | `scanPage` → `sanitizeSnapshot` |
-| **AI-Eye** | Overlay on the real page (`PROTECTED · CARD`, `QUARANTINED · PROMPT INJECTION`), legend, live monitoring indicator | content script `overlay` / `ping` |
+| **AI-Eye** | Overlay on the real page (`PROTECTED · CARD`, `QUARANTINED · PROMPT INJECTION`, `CENSORED · VIDEO`), **video privacy shield**, legend, live monitoring indicator | content script `overlay` / `shield` / `ping` |
 | **Agent** | Natural-language tasks, Gemini vs offline mode banner, OBSERVE → SANITIZE → REASON → VALIDATE → APPROVE → EXECUTE stepper, sanitized context, proposed actions | `runAgent`, `geminiAgent`, `mockAgent` |
 | **Approvals** | Pending request (also as a modal), risk class, data that would be used (masked), Approve once / Deny, history | `classifyRisk`, single-use grants in the content script |
 | **Threats** | All PS-004 categories with counts and severity, detected threats table, prompt-injection section (visible/hidden, why, reached the AI?) | `taxonomy.js`, sanitizer injection findings |
@@ -52,6 +52,23 @@ in the ledger, or in anything sent to the AI.
 Try it: `python testlab/serve.py`, open <http://127.0.0.1:8000/signin.html> or
 `register.html`, and run *Sign in to my account* / *Create an account*.
 
+## Video calls
+
+Two protections, for two different audiences:
+
+- **The AI.** PrivacyLens sends text only: video frames and screenshots are
+  never captured or sent. Participant names announced by a label (`Name:`,
+  `Host:`, `Speaker:`, `Participant:`, `From:` …) or held in a name field are
+  detected and replaced with synthetic names, like emails and phones.
+- **Your screen.** AI-Eye → *Video privacy shield* blurs every `<video>` and
+  `<canvas>` feed and every detected personal detail (names, emails, phones,
+  cards…) directly on the page, for screen sharing, recordings and
+  shoulder-surfing. Tiles that appear later (people joining) are blurred as
+  they appear; switching the shield off restores the page exactly.
+
+Not done: per-face detection (the shield blurs whole frames), and names that
+appear in free text without a label.
+
 ## Running the five PS-004 scenarios
 
 1. From the repository root: `python testlab/serve.py` (serves `testlab/pages` on port 8000).
@@ -65,7 +82,7 @@ Scenarios always use the secure default settings. Current, verified results:
 | 1 | E-commerce checkout | PASS (13 checks) | card/CVV/email/address replaced (card Luhn-valid); real agent run asks approval for *Pay Now* (critical); page-side executor refuses Pay without a grant; payload with the real card blocked |
 | 2 | Authentication | PASS (10) | password and OTP redacted, email replaced, password typed into the task redacted |
 | 3 | Customer support | PASS (12) | emails and Indian mobiles (`+91 9876543210`, `+91 98765 43210`, `9876543210`) replaced; visible and hidden prompt injections never reach the AI |
-| 4 | Video conferencing | PARTIAL (5 pass, 2 not supported) | email replaced. **Names are sent unchanged** (no name detection) and **face detection is not implemented**; reported as "not supported", never as a pass |
+| 4 | Video conferencing | PARTIAL (all checks pass, 1 not supported) | participant name and email replaced for the AI; shield blurs the video feed, name and email on the page (checked via computed styles); **per-face detection is not implemented**, reported as "not supported" |
 | 5 | Developer settings | PASS (14) | OpenAI/AWS/GitHub keys, JWT and IP redacted; real-key payload blocked; unregistered key caught by the second-opinion scan |
 
 ## Gemini setup
@@ -114,8 +131,9 @@ service worker: opens the panel, mirrors the firewall state on the toolbar badge
 
 ## Known limitations
 
-- Text only: no screenshots are sent, and there is no image or face redaction.
-- No person-name detection (no NER model).
+- Text only: no screenshots are sent. The video shield blurs whole frames on
+  the page; there is no per-face detection.
+- Names are only detected where a label or field says so (no NER model).
 - Only the top-level frame is covered; card fields inside third-party iframes
   (e.g. hosted payment forms) are not seen.
 - Gemini mode sends a `responseSchema` so replies have the exact action shape,
@@ -134,9 +152,9 @@ navigation (verified end to end: catalog → checkout → approval).
 ## Tests
 
 ```sh
-cd extension && npm test                          # 51 unit tests (Node ≥ 20)
+cd extension && npm test                          # 57 unit tests (Node ≥ 20)
 python -m pytest tests/test_extension_parity.py   # JS == Python detectors and risk score
-python -m pytest tests/test_extension_e2e.py      # real Chromium + real extension, 17 tests
+python -m pytest tests/test_extension_e2e.py      # real Chromium + real extension, 19 tests
 python -m pytest                                  # everything (Python + parity + E2E)
 ```
 

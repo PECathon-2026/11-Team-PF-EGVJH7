@@ -121,6 +121,19 @@ export function createController(store, { pinnedTabId = null } = {}) {
       }
     }
     if ("overlay" in patch) await setOverlay(patch.overlay);
+    if ("videoShield" in patch) {
+      await log("video_shield", { on: patch.videoShield });
+      activity(`Video privacy shield ${patch.videoShield ? "on" : "off"}`, patch.videoShield ? "ok" : "warn", "settings");
+      if (S.tab.access && S.tab.id != null) {
+        try {
+          await ensureContentScript(S.tab.id);
+          await applyVideoShield(S.tab.id, S.scan);
+        } catch {
+          // Page not injectable right now; applied on the next scan.
+        }
+        await refreshTab();
+      }
+    }
   }
 
   async function setApiKey(key) {
@@ -211,6 +224,12 @@ export function createController(store, { pinnedTabId = null } = {}) {
     return S.tab.id;
   }
 
+  // Blur video/canvas feeds and every personal detail found by the last scan.
+  const visibleDetailIds = (rows = []) => [...new Set(rows.filter((r) => !r.hidden).map((r) => r.id))];
+  async function applyVideoShield(tabId, scan) {
+    return sendToTab(tabId, { cmd: "shield", video: S.settings.videoShield, detailIds: visibleDetailIds(scan?.rows) });
+  }
+
   async function setOverlay(visible) {
     if (!S.tab.access || S.tab.id == null) return;
     try {
@@ -261,6 +280,7 @@ export function createController(store, { pinnedTabId = null } = {}) {
         quarantined: summary.injections.filter((i) => i.quarantined && !i.hidden).map((i) => i.id),
       });
       await sendToTab(tabId, { cmd: "overlayVisible", visible: S.settings.overlay });
+      await applyVideoShield(tabId, summary);
       await log("page_scanned", {
         risk: summary.risk.total, protectedValues: summary.protectedValues,
         injections: summary.injections.length, egressOk: summary.egress.ok, honeytokenOk: summary.honeytokenOk,
@@ -309,6 +329,7 @@ export function createController(store, { pinnedTabId = null } = {}) {
       } else if (kind === "scan") {
         const { step, source, ...summary } = data;
         recordScan(summary, `agent step ${step + 1}`);
+        if (S.settings.videoShield && S.tab.id != null) applyVideoShield(S.tab.id, summary).catch(() => {});
       } else if (kind === "egress") {
         if (data.kind === "http") {
           const stats = { ...S.stats, inspected: S.stats.inspected + 1, blocked: S.stats.blocked + (data.ok ? 0 : 1) };
@@ -468,6 +489,7 @@ export function createController(store, { pinnedTabId = null } = {}) {
       const checks = evaluateScan(scenario, snapshot, scan);
 
       if (scenario.dynamic?.includes("payApproval")) checks.push(...(await payApprovalChecks(tab.id, scenario)));
+      if (scenario.dynamic?.includes("videoShield")) checks.push(await videoShieldCheck(tab.id, scan));
 
       await sendToTab(tab.id, {
         cmd: "overlay",
@@ -524,6 +546,23 @@ export function createController(store, { pinnedTabId = null } = {}) {
       evidence: "Direct execute message sent with no grant, bypassing the side panel's own checks",
     });
     return out;
+  }
+
+  // Turns the shield on in the test tab and reads back what the page renders.
+  async function videoShieldCheck(tabId, scan) {
+    const counts = await sendToTab(tabId, { cmd: "shield", video: true, detailIds: visibleDetailIds(scan.sanitized.rows) });
+    const [{ result: filters }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => [...document.querySelectorAll("[data-pl-censored]")].map((el) => `${el.tagName.toLowerCase()}:${getComputedStyle(el).filter}`),
+    });
+    const blurred = filters.filter((f) => f.includes("blur("));
+    return {
+      name: "Video privacy shield blurs feeds and personal details on the page",
+      expected: "Video feed, participant name and email rendered blurred",
+      actual: `${counts.censoredMedia} feed(s), ${counts.censoredDetails} personal detail(s) blurred`,
+      status: counts.censoredMedia > 0 && counts.censoredDetails >= 2 && blurred.length === filters.length ? "pass" : "fail",
+      evidence: `Computed styles: ${filters.join(", ") || "none"}`,
+    };
   }
 
   async function runAllScenarios() {
