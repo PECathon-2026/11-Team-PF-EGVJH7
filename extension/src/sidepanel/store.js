@@ -26,6 +26,7 @@ export function createStore() {
     apiKeySet: false,
     // Display-safe profile summary: masked own values, fake synthetic identity.
     profile: { own: {}, synthetic: {} },
+    shield: { on: false, media: 0, details: 0, frames: 0, error: null },
     gemini: null, // {ok, message, at}
     tab: { id: null, url: "", origin: "", host: "", access: false, web: false, monitoring: null },
     scan: null, // scanSummary + {at, source}

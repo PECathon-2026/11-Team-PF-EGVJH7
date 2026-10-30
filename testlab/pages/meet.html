@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Team stand-up</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; background: #202124; color: #fff; }
+    .grid { display: grid; grid-template-columns: repeat(2, 320px); gap: 12px; padding: 12px; }
+    .tile { position: relative; width: 320px; height: 180px; border-radius: 8px; overflow: hidden; }
+    .tile canvas { width: 100%; height: 100%; display: block; }
+    .who { position: absolute; left: 8px; bottom: 6px; font-size: 13px; }
+    .pin { position: absolute; right: 6px; top: 6px; }
+    iframe { width: 320px; height: 180px; border: 0; }
+    .controls { display: flex; gap: 8px; justify-content: center; padding: 12px; }
+  </style>
+</head>
+<body>
+  <!-- Built like real web call apps: names are bare text on each tile (no
+       "Name:" label), one tile lives in a shadow root, one in an iframe. -->
+  <div class="grid" id="grid">
+    <div class="tile" id="tile-alice">
+      <canvas width="320" height="180"></canvas>
+      <div class="who">Alice Smith</div>
+      <button class="pin" type="button">Pin</button>
+    </div>
+    <call-tile id="tile-rahul" who="Rahul Mehta"></call-tile>
+    <iframe id="tile-frame" src="meet-frame.html" title="Participant"></iframe>
+  </div>
+  <div class="controls" id="controls">
+    <button type="button">Mute</button>
+    <button type="button">Camera</button>
+    <button type="button">Present</button>
+    <button type="button">Chat</button>
+    <button type="button">Leave call</button>
+  </div>
+  <script>
+    // Test fixture: paint stand-in camera frames (no media files needed).
+    function paint(canvas, a, b) {
+      const ctx = canvas.getContext("2d");
+      const g = ctx.createLinearGradient(0, 0, 320, 180);
+      g.addColorStop(0, a); g.addColorStop(1, b);
+      ctx.fillStyle = g; ctx.fillRect(0, 0, 320, 180);
+      ctx.fillStyle = "#ffd6a5"; ctx.beginPath(); ctx.arc(160, 80, 38, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(105, 125, 110, 55);
+    }
+    customElements.define("call-tile", class extends HTMLElement {
+      connectedCallback() {
+        const root = this.attachShadow({ mode: "open" });
+        root.innerHTML = `<style>.tile{position:relative;width:320px;height:180px;border-radius:8px;overflow:hidden}
+          canvas{width:100%;height:100%;display:block}.who{position:absolute;left:8px;bottom:6px;font-size:13px;color:#fff}</style>
+          <div class="tile"><canvas width="320" height="180"></canvas><div class="who"></div></div>`;
+        root.querySelector(".who").textContent = this.getAttribute("who");
+        paint(root.querySelector("canvas"), "#2a9d8f", "#264653");
+      }
+    });
+    paint(document.querySelector("#tile-alice canvas"), "#3a6df0", "#9b5de5");
+    window.paintTile = paint;
+  </script>
+</body>
+</html>

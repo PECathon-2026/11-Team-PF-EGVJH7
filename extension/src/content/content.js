@@ -4,8 +4,11 @@
 // chrome.scripting cannot use ES imports.
 
 (() => {
-  if (window.__privacyLensLoaded) return;
-  window.__privacyLensLoaded = true;
+  // Skip only if a *live* copy is already here. After the extension is
+  // reloaded, the old copy's chrome.runtime is gone but its marker remains;
+  // treating that as "loaded" would leave the page with a dead script.
+  if (window.__privacyLens?.alive()) return;
+  window.__privacyLens = { alive: () => Boolean(chrome.runtime?.id) };
 
   const INTERACTIVE = "button, input, textarea, select, a, [role='button'], [contenteditable='true']";
   const TEXT_REGIONS = "p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th, dt, dd, svg, [role='img']";
@@ -216,13 +219,58 @@
   }
 
   function uncensorAll() {
-    for (const el of document.querySelectorAll("[data-pl-censored]")) {
+    for (const el of deepQueryAll("[data-pl-censored]")) {
       const [value, priority] = savedFilter.get(el) || ["", ""];
       if (value) el.style.setProperty("filter", value, priority);
       else el.style.removeProperty("filter");
       el.removeAttribute("data-pl-censored");
       savedFilter.delete(el);
     }
+  }
+
+  // Real call apps (Meet, Teams, Zoom web) put tiles inside web components:
+  // look through every open shadow root too.
+  function deepQueryAll(selector, root = document, out = []) {
+    root.querySelectorAll(selector).forEach((el) => out.push(el));
+    for (const el of root.querySelectorAll("*")) {
+      if (el.shadowRoot) deepQueryAll(selector, el.shadowRoot, out);
+    }
+    return out;
+  }
+
+  const parentAcrossShadow = (el) => el.parentElement ?? (el.getRootNode() instanceof ShadowRoot ? el.getRootNode().host : null);
+  const containsDeep = (container, el) => {
+    for (let n = el; n; n = parentAcrossShadow(n)) if (n === container) return true;
+    return false;
+  };
+
+  /**
+   * The video "tile": the largest ancestor that is still about the size of
+   * the video. Call apps print the participant's name on top of the tile, so
+   * blurring the tile hides that name too. Stops before reaching a container
+   * holding another feed or a toolbar, so call controls stay usable.
+   */
+  function tileOf(media, allMedia) {
+    const r = media.getBoundingClientRect();
+    const area = r.width * r.height;
+    if (!area) return media;
+    let tile = media;
+    for (let el = parentAcrossShadow(media); el && el !== document.body && el !== document.documentElement; el = parentAcrossShadow(el)) {
+      const a = el.getBoundingClientRect();
+      if (a.width * a.height > area * 1.8) break;
+      if (allMedia.some((m) => m !== media && containsDeep(el, m))) break;
+      if (el.querySelectorAll("button, [role='button']").length > 3) break;
+      // A blur on an inline or display:contents wrapper (e.g. a custom
+      // element) may not render: keep climbing, but don't pick it.
+      if (["inline", "contents"].includes(getComputedStyle(el).display)) continue;
+      tile = el;
+    }
+    return tile;
+  }
+
+  function blurMedia() {
+    const media = deepQueryAll(MEDIA).filter((el) => !el.closest("privacylens-overlay"));
+    for (const el of media) censor(tileOf(el, media), "media");
   }
 
   function applyShield() {
@@ -232,28 +280,39 @@
       shieldObserver = null;
       return;
     }
-    document.querySelectorAll(MEDIA).forEach((el) => censor(el, "media"));
+    blurMedia();
     for (const id of shield.detailIds) {
       document.querySelectorAll(`[data-pl-id="${CSS.escape(id)}"]`).forEach((el) => censor(el, "detail"));
     }
-    // Calls add video tiles as people join: blur those too.
-    if (!shieldObserver) {
-      shieldObserver = new MutationObserver((mutations) => {
-        for (const m of mutations) {
-          for (const node of m.addedNodes) {
-            if (node.nodeType !== Node.ELEMENT_NODE) continue;
-            if (node.matches(MEDIA)) censor(node, "media");
-            node.querySelectorAll?.(MEDIA).forEach((el) => censor(el, "media"));
-          }
-        }
+    // Calls add video tiles as people join: blur those too (debounced).
+    shieldObserver?.disconnect();
+    let pending = false;
+    shieldObserver = new MutationObserver(() => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        blurMedia();
       });
-      shieldObserver.observe(document.documentElement, { childList: true, subtree: true });
+    });
+    shieldObserver.observe(document.documentElement, { childList: true, subtree: true });
+    for (const host of deepQueryAll("*").filter((el) => el.shadowRoot)) {
+      shieldObserver.observe(host.shadowRoot, { childList: true, subtree: true });
     }
   }
 
+  // Entry point used by the side panel for every frame of the tab (video
+  // calls often render inside iframes, where messages to frame 0 never reach).
+  window.__privacyLens.shield = (opts) => {
+    shield = { video: Boolean(opts.video), detailIds: Array.isArray(opts.detailIds) ? opts.detailIds : [] };
+    applyShield();
+    drawOverlay();
+    return shieldCounts();
+  };
+
   const shieldCounts = () => ({
-    censoredMedia: document.querySelectorAll('[data-pl-censored="media"]').length,
-    censoredDetails: document.querySelectorAll('[data-pl-censored="detail"]').length,
+    censoredMedia: deepQueryAll('[data-pl-censored="media"]').length,
+    censoredDetails: deepQueryAll('[data-pl-censored="detail"]').length,
   });
 
   // --- AI-eye overlay --------------------------------------------------------
@@ -321,10 +380,7 @@
           });
           break;
         case "shield":
-          shield = { video: Boolean(msg.video), detailIds: Array.isArray(msg.detailIds) ? msg.detailIds : [] };
-          applyShield();
-          drawOverlay();
-          sendResponse({ ok: true, ...shieldCounts() });
+          sendResponse({ ok: true, ...window.__privacyLens.shield(msg) });
           break;
         case "snapshot":
           sendResponse({ ok: true, snapshot: snapshot() });
