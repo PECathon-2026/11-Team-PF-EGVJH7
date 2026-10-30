@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head><title>Sign in</title></head>
+<body>
+  <h1>Sign in</h1>
+  <form id="signin">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email">
+
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password">
+
+    <label><input id="show-password" type="checkbox"> Show password</label>
+    <a id="forgot" href="#">Forgot password?</a>
+
+    <button id="signin-btn" type="submit">Sign in</button>
+  </form>
+  <p id="result" hidden>Signed in successfully.</p>
+  <script>
+    document.getElementById("show-password").addEventListener("change", (event) => {
+      document.getElementById("password").type = event.target.checked ? "text" : "password";
+    });
+    // Test fixture: record the submission instead of sending it anywhere.
+    document.getElementById("signin").addEventListener("submit", (event) => {
+      event.preventDefault();
+      window.__submitted = Object.fromEntries(new FormData(event.target));
+      document.getElementById("result").hidden = false;
+    });
+  </script>
+</body>
+</html>

@@ -22,8 +22,27 @@ _KEYWORD_MAP = [
     (("api", "token", "secret", "key"), "API_KEY"),
 ]
 
+# Controls that hold a choice or an action, not something the user typed:
+# their label may say "Show password" or "Remember my email", but their
+# value ("on", a button caption) is never the secret itself.
+_NON_TEXT_INPUT_TYPES = {
+    "checkbox", "radio", "button", "submit", "reset", "image", "file", "range", "color",
+}
+
+
+def is_text_entry(el: Element) -> bool:
+    element_type = (el.type or "").strip().lower()
+    return el.tag == "textarea" or (el.tag == "input" and element_type not in _NON_TEXT_INPUT_TYPES)
+
+
 def structural_hits(el: Element) -> list[Detection]:
-    """Identify sensitive fields using DOM metadata and labels."""
+    """Identify sensitive fields using DOM metadata and labels.
+
+    Only fields a value is typed into qualify; text on buttons, links and
+    checkboxes is still covered by the pattern finders.
+    """
+    if not is_text_entry(el):
+        return []
     out = []
 
     # Give structural hits a span so the image drawer can identify them.

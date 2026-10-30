@@ -134,6 +134,8 @@
       if (href && RISKY_URL.test(decodeURIComponent(href))) return true;
     }
     if ((action.type === "type" || action.type === "select") && luhnCard(action.text || "")) return true;
+    // Passwords are only ever typed with an explicit, single-use approval.
+    if (action.type === "type" && el.type === "password") return true;
     return false;
   }
 
@@ -176,7 +178,8 @@
     if (action.type === "click") {
       el.click();
     } else if (action.type === "type") {
-      if (!el.matches("input, textarea") || el.type === "password" || el.readOnly) {
+      // A password field is only reachable here after the grant check above.
+      if (!el.matches("input, textarea") || el.type === "hidden" || el.readOnly) {
         throw new Error("Element cannot be typed into.");
       }
       el.focus();
@@ -190,6 +193,68 @@
       throw new Error("Unsupported action.");
     }
   }
+
+  // --- Video privacy shield ----------------------------------------------------
+  // Blurs video/canvas feeds and every personal detail PrivacyLens detected,
+  // directly on the page (for screen sharing, recording, shoulder surfing).
+  // Inline style changes through the CSSOM are not blocked by page CSPs, and
+  // the original inline filter is restored when the shield is turned off.
+
+  const MEDIA = "video, canvas";
+  const MEDIA_BLUR = "blur(24px)";
+  const DETAIL_BLUR = "blur(7px)";
+  const savedFilter = new WeakMap();
+  let shield = { video: false, detailIds: [] };
+  let shieldObserver = null;
+
+  function censor(el, kind) {
+    if (!savedFilter.has(el)) {
+      savedFilter.set(el, [el.style.getPropertyValue("filter"), el.style.getPropertyPriority("filter")]);
+    }
+    el.style.setProperty("filter", kind === "media" ? MEDIA_BLUR : DETAIL_BLUR, "important");
+    el.setAttribute("data-pl-censored", kind);
+  }
+
+  function uncensorAll() {
+    for (const el of document.querySelectorAll("[data-pl-censored]")) {
+      const [value, priority] = savedFilter.get(el) || ["", ""];
+      if (value) el.style.setProperty("filter", value, priority);
+      else el.style.removeProperty("filter");
+      el.removeAttribute("data-pl-censored");
+      savedFilter.delete(el);
+    }
+  }
+
+  function applyShield() {
+    uncensorAll();
+    if (!shield.video) {
+      shieldObserver?.disconnect();
+      shieldObserver = null;
+      return;
+    }
+    document.querySelectorAll(MEDIA).forEach((el) => censor(el, "media"));
+    for (const id of shield.detailIds) {
+      document.querySelectorAll(`[data-pl-id="${CSS.escape(id)}"]`).forEach((el) => censor(el, "detail"));
+    }
+    // Calls add video tiles as people join: blur those too.
+    if (!shieldObserver) {
+      shieldObserver = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          for (const node of m.addedNodes) {
+            if (node.nodeType !== Node.ELEMENT_NODE) continue;
+            if (node.matches(MEDIA)) censor(node, "media");
+            node.querySelectorAll?.(MEDIA).forEach((el) => censor(el, "media"));
+          }
+        }
+      });
+      shieldObserver.observe(document.documentElement, { childList: true, subtree: true });
+    }
+  }
+
+  const shieldCounts = () => ({
+    censoredMedia: document.querySelectorAll('[data-pl-censored="media"]').length,
+    censoredDetails: document.querySelectorAll('[data-pl-censored="detail"]').length,
+  });
 
   // --- AI-eye overlay --------------------------------------------------------
 
@@ -210,15 +275,15 @@
       .box{position:absolute;border:2px solid #7c5cff;background:rgba(124,92,255,.12);border-radius:4px;box-sizing:border-box}
       .box.q{border-color:#e5484d;background:rgba(229,72,77,.15)}
       .tag{position:absolute;top:-18px;left:-2px;font:600 10px/16px system-ui,sans-serif;color:#fff;background:#7c5cff;padding:0 6px;border-radius:4px 4px 0 0;white-space:nowrap}
-      .q .tag{background:#e5484d}`;
+      .q .tag{background:#e5484d}
+      .box.c{border-color:#f5b440;background:transparent}
+      .c .tag{background:#b26a00}`;
     root.append(style);
 
-    const add = (id, label, quarantined) => {
-      const el = document.querySelector(`[data-pl-id="${CSS.escape(id)}"]`);
-      if (!el) return;
+    const addFor = (el, label, variant = "") => {
       const r = el.getBoundingClientRect();
       const box = document.createElement("div");
-      box.className = quarantined ? "box q" : "box";
+      box.className = `box ${variant}`.trim();
       box.style.cssText = `left:${r.left + scrollX - 2}px;top:${r.top + scrollY - 2}px;width:${r.width + 4}px;height:${r.height + 4}px`;
       const tag = document.createElement("div");
       tag.className = "tag";
@@ -226,10 +291,15 @@
       box.append(tag);
       root.append(box);
     };
+    const add = (id, label, variant) => {
+      const el = document.querySelector(`[data-pl-id="${CSS.escape(id)}"]`);
+      if (el) addFor(el, label, variant);
+    };
     const types = new Map();
     for (const { id, type } of overlayItems.items) types.set(id, [...(types.get(id) || []), type]);
-    for (const [id, list] of types) add(id, `PROTECTED · ${[...new Set(list)].join(" + ")}`, false);
-    for (const id of overlayItems.quarantined) add(id, "QUARANTINED · PROMPT INJECTION", true);
+    for (const [id, list] of types) add(id, `PROTECTED · ${[...new Set(list)].join(" + ")}`);
+    for (const id of overlayItems.quarantined) add(id, "QUARANTINED · PROMPT INJECTION", "q");
+    for (const el of document.querySelectorAll('[data-pl-censored="media"]')) addFor(el, "CENSORED · VIDEO", "c");
     document.documentElement.append(overlayHost);
   }
 
@@ -246,7 +316,15 @@
             protectedCount: overlayItems.items.length,
             quarantinedCount: overlayItems.quarantined.length,
             snapshotId: currentSnapshotId,
+            videoShield: shield.video,
+            ...shieldCounts(),
           });
+          break;
+        case "shield":
+          shield = { video: Boolean(msg.video), detailIds: Array.isArray(msg.detailIds) ? msg.detailIds : [] };
+          applyShield();
+          drawOverlay();
+          sendResponse({ ok: true, ...shieldCounts() });
           break;
         case "snapshot":
           sendResponse({ ok: true, snapshot: snapshot() });

@@ -454,3 +454,10 @@ dialog .approval-card { box-shadow: 0 20px 50px -20px rgba(0, 0, 0, .8); }
 .check.fail .check-name { color: var(--bad); }
 .check-io { display: grid; grid-template-columns: 58px 1fr; gap: 2px 8px; margin-top: 4px; }
 .check-io span { overflow-wrap: anywhere; }
+
+/* Autofill profile */
+.profile-grid { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.profile-field { display: flex; flex-direction: column; gap: 4px; }
+.profile-label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.profile-label > .small { font-weight: 600; margin-right: auto; }
+.swatch.censored { border-color: #f5b440; background: transparent; }

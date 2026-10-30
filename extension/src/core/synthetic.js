@@ -80,6 +80,13 @@ export function syntheticAddress() {
   return `${10 + randomIndex(990)} Synthetic Avenue, Test City`;
 }
 
+const FIRST_NAMES = ["Aarav", "Diya", "Kabir", "Meera", "Rohan", "Sara", "Vikram", "Zoya"];
+const LAST_NAMES = ["Sharma", "Iyer", "Khan", "Patel", "Reddy", "Singh", "Das", "Nair"];
+
+export function syntheticName() {
+  return `${pick(FIRST_NAMES)} ${pick(LAST_NAMES)}`;
+}
+
 const GENERATORS = {
   CARD: syntheticCard,
   AADHAAR: syntheticAadhaar,
@@ -87,7 +94,29 @@ const GENERATORS = {
   EMAIL: syntheticEmail,
   PHONE: syntheticPhone,
   ADDRESS: syntheticAddress,
+  PERSON: syntheticName,
 };
+
+/**
+ * A complete fake identity for filling forms when the user has not entered
+ * their own details. Every value is synthetic test data (the card is a
+ * Luhn-valid number in the "4" range, never a real account).
+ */
+export function syntheticIdentity() {
+  const name = syntheticName();
+  const handle = name.toLowerCase().replace(/[^a-z]+/g, ".") + randomString(DIGITS, 3);
+  return {
+    full_name: name,
+    email: `${handle}@example.com`,
+    phone: `+91 ${pick("6789")}${randomString(DIGITS, 4)} ${randomString(DIGITS, 5)}`,
+    address: syntheticAddress(),
+    username: handle,
+    password: `Syn-${randomString(UPPER + LOWER + DIGITS, 6)}-${randomString(UPPER + LOWER + DIGITS, 6)}!`,
+    card_number: syntheticCard("0000 0000 0000 0000"),
+    card_expiry: `${String(1 + randomIndex(12)).padStart(2, "0")}/${30 + randomIndex(5)}`,
+    cvv: randomString(DIGITS, 3),
+  };
+}
 
 // High-impact types: restoring the real value into a page needs approval.
 export const RESTORE_NEEDS_APPROVAL = new Set(["CARD", "AADHAAR", "PAN"]);

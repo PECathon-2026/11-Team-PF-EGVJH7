@@ -11,6 +11,9 @@ export const DEFAULT_UI_SETTINGS = Object.freeze({
   theme: "dark",
   testlabBaseUrl: "http://127.0.0.1:8000",
   blockedSites: [],
+  useSyntheticIdentity: true,
+  maxSteps: 12, // a sign-up form is ~5 fields + submit + done
+  videoShield: false,
 });
 
 const idleStages = () => Object.fromEntries(STAGES.map((s) => [s, { state: "idle", detail: "" }]));
@@ -21,6 +24,8 @@ export function createStore() {
     view: "overview",
     settings: { ...DEFAULT_UI_SETTINGS },
     apiKeySet: false,
+    // Display-safe profile summary: masked own values, fake synthetic identity.
+    profile: { own: {}, synthetic: {} },
     gemini: null, // {ok, message, at}
     tab: { id: null, url: "", origin: "", host: "", access: false, web: false, monitoring: null },
     scan: null, // scanSummary + {at, source}

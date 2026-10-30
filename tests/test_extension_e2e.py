@@ -88,7 +88,8 @@ def ui(extension_context, testlab_server):
         panel.on("console", lambda m: m.type == "error" and errors.append(m.text))
         panel.on("pageerror", lambda e: errors.append(str(e)))
         panel.goto(f"chrome-extension://{extension_id}/src/sidepanel/panel.html")
-        panel.evaluate("() => chrome.storage.local.clear()")  # default settings for each test
+        # Default settings and an empty profile/session for each test.
+        panel.evaluate("() => Promise.all([chrome.storage.local.clear(), chrome.storage.session.clear()])")
         tab_id = panel.evaluate("async (url) => (await chrome.tabs.query({url})).at(-1).id", f"{testlab_server}/{page_name}")
         panel.goto(f"chrome-extension://{extension_id}/src/sidepanel/panel.html?tab={tab_id}")
         panel.wait_for_selector("#firewall-status")
@@ -246,4 +247,180 @@ def test_all_five_ps004_scenarios(ui, testlab_server):
     assert verdicts == {"checkout": "PASS", "login": "PASS", "support": "PASS", "video": "PARTIAL", "dev": "PASS"}
     # Partial means only unsupported checks remain, never a failure.
     assert panel.locator("#scenario-video .check.fail").count() == 0
-    assert panel.locator("#scenario-video .check.unsupported").count() == 2
+    assert panel.locator("#scenario-video .check.unsupported").count() == 1  # per-face detection only
+
+
+def test_multi_page_task_follows_link_and_still_asks_before_paying(ui, testlab_server):
+    """Regression: the content script must be re-attached after navigation."""
+    shop, panel, _ = ui("catalog.html")
+    _run_until_approval(panel, task="Go to the cart and pay")
+
+    assert shop.url.endswith("/checkout.html"), "agent did not navigate"
+    assert "Pay Now" in panel.text_content("dialog#approval")
+    shop.evaluate(TRACK_PAY_CLICKS_JS)
+    panel.click("#dialog-approve")
+    panel.wait_for_selector("#status.ok", timeout=15000)
+    assert shop.evaluate("window.__payClicks") == 1
+
+
+# Runs runAgent inside the side panel with a planner that copies the card it
+# was shown (a synthetic one) into a confirmation field, through the real
+# loop: sanitize -> policy -> approval -> restore -> page-side executor.
+TYPING_RUN_JS = """async ({tabId, approve}) => {
+    const { runAgent } = await import('/src/core/orchestrator.js');
+    let card = null;
+    const seen = [];
+    const result = await runAgent({
+        tabId, task: 'Confirm my card number',
+        agent: (request) => {
+            if (request.history.length) return {type: 'done', reason: 'Filled.'};
+            const source = request.elements.find((e) => e.label === 'Card number');
+            const target = request.elements.find((e) => e.placeholder === 'Re-enter card');
+            seen.push(source.value);
+            return {type: 'type', element_id: target.id, text: source.value, reason: 'Confirm the card.'};
+        },
+        ui: { event() {}, requestApproval: async (c) => { card = c; return approve; } },
+    });
+    return { status: result.status, seen, risk: card?.risk.level, uses: card?.uses };
+}"""
+
+ADD_CONFIRM_FIELD_JS = """() => document.querySelector('form').insertAdjacentHTML('beforeend',
+    '<label for="card2">Confirm card</label><input id="card2" placeholder="Re-enter card">')"""
+
+
+@pytest.mark.parametrize("approve", [True, False])
+def test_typing_real_card_needs_approval_and_ai_only_sees_synthetic(ui, approve):
+    shop, panel, tab_id = ui()
+    shop.evaluate(ADD_CONFIRM_FIELD_JS)
+
+    out = panel.evaluate(TYPING_RUN_JS, {"tabId": tab_id, "approve": approve})
+
+    assert out["seen"] and out["seen"][0] != REAL_CARD          # the AI saw a synthetic card
+    assert out["risk"] == "critical"
+    assert out["uses"][0]["type"] == "CARD" and REAL_CARD not in out["uses"][0]["masked"]
+    if approve:
+        assert out["status"] == "completed"
+        assert shop.input_value("#card2") == REAL_CARD          # real value typed on the page
+    else:
+        assert out["status"] == "blocked"
+        assert shop.input_value("#card2") == ""                 # nothing typed
+
+
+def _approve_until_done(panel, approvals=2):
+    for _ in range(approvals):
+        panel.wait_for_selector("dialog#approval[open]", timeout=15000)
+        panel.click("#dialog-approve")
+    panel.wait_for_selector("#status.ok", timeout=15000)
+
+
+def test_agent_signs_in_with_your_details_without_the_ai_seeing_them(ui):
+    real = {"email": "priya.real@corp.test", "password": "Real-Pa55word!"}
+    shop, panel, _ = ui("signin.html")
+
+    panel.click("#nav-settings")
+    for key, value in real.items():
+        panel.fill(f"#profile-{key}", value)
+        panel.press(f"#profile-{key}", "Tab")
+        panel.wait_for_selector(f"label:has(#profile-{key}) .chip-ok")
+
+    panel.click("#nav-agent")
+    panel.fill("#task", "Sign in to my account")
+    panel.click("#run")
+    _approve_until_done(panel)  # password entry, then form submission
+
+    assert shop.evaluate("window.__submitted") == real
+    assert shop.is_visible("#result")
+
+    # Nothing the AI received, and nothing in the ledger, contains the real values.
+    panel.click("#nav-scanner")
+    payload = panel.text_content("#ai-payload")
+    panel.click("#nav-ledger")
+    ledger = panel.text_content("#ledger")
+    panel.click("#nav-settings")
+    settings_text = panel.text_content("#view-settings")
+    for value in real.values():
+        assert value not in payload and value not in ledger and value not in settings_text, value
+
+
+def test_agent_registers_with_the_synthetic_identity(ui):
+    shop, panel, _ = ui("register.html")
+    identity = panel.evaluate("async () => (await chrome.storage.session.get('syntheticIdentity')).syntheticIdentity")
+
+    panel.click("#nav-agent")
+    panel.fill("#task", "Create an account")
+    panel.click("#run")
+    _approve_until_done(panel)
+
+    submitted = shop.evaluate("window.__submitted")
+    assert submitted == {
+        "name": identity["full_name"], "email": identity["email"], "phone": identity["phone"],
+        "address": identity["address"], "password": identity["password"],
+    }
+    assert identity["email"].endswith("@example.com")
+
+
+def test_page_side_executor_refuses_password_typing_without_a_grant(ui):
+    """Defense in depth: even a direct message cannot type a password unapproved."""
+    shop, panel, tab_id = ui("signin.html")
+    result = panel.evaluate(
+        """async (tabId) => {
+            await chrome.scripting.executeScript({target: {tabId}, files: ['src/content/content.js']});
+            const {snapshot} = await chrome.tabs.sendMessage(tabId, {cmd: 'snapshot'});
+            const pw = snapshot.elements.find((e) => e.type === 'password');
+            return chrome.tabs.sendMessage(tabId, {cmd: 'execute', snapshotId: snapshot.snapshotId,
+                action: {type: 'type', element_id: pw.id, text: 'stolen-guess'}, grant: null});
+        }""",
+        tab_id,
+    )
+    assert result == {"ok": False, "error": "This action requires your approval."}
+    assert shop.input_value("#password") == ""
+
+
+def test_show_password_checkbox_and_forgot_link_are_not_flagged(ui):
+    _, panel, _ = ui("signin.html")
+    panel.click("#nav-scanner")
+    panel.click("#scan-button")
+    panel.wait_for_selector("#protect-banner.ok")
+    panel.click("#nav-threats")
+    rows = panel.locator("#view-threats table tbody tr").all_text_contents()
+    # Only the real fields: email (empty here) and password (empty) have no
+    # values, so nothing on this page is a detected secret.
+    assert rows == []
+    assert panel.text_content("#category-grid [data-category=PASSWORD] .cat-count") == "0"
+
+
+FILTERS_JS = """() => ({
+    feed: getComputedStyle(document.querySelector('#p1-video')).filter,
+    name: getComputedStyle(document.querySelector('#p1-name').closest('p')).filter,
+    email: getComputedStyle(document.querySelector('#p1-email').closest('p')).filter,
+})"""
+
+
+def test_video_shield_blurs_feeds_and_names_on_the_page(ui):
+    shop, panel, _ = ui("video.html")
+    shop.evaluate("() => document.querySelector('#p1-video').style.setProperty('filter', 'saturate(2)')")  # page's own style
+
+    panel.click("#nav-scanner")
+    panel.click("#scan-button")
+    panel.wait_for_selector("#protect-banner.ok")
+    assert "Alice Smith" not in panel.text_content("#ai-payload")  # the AI never gets the name
+
+    panel.click("#nav-overlay")
+    panel.click("label[for=video-shield-toggle]")
+    panel.wait_for_selector("#shield-status", timeout=10000)
+    filters = shop.evaluate(FILTERS_JS)
+    assert "blur(24px)" in filters["feed"]
+    assert "blur(7px)" in filters["name"]
+    assert "blur(7px)" in filters["email"]  # every detected personal detail, not just names
+
+    # A participant joining later is blurred as soon as their tile appears.
+    shop.evaluate("""() => document.querySelector('.participant').insertAdjacentHTML('beforeend',
+        '<video id="late-joiner" width="160" height="90"></video>')""")
+    shop.wait_for_function("() => getComputedStyle(document.querySelector('#late-joiner')).filter.includes('blur')")
+
+    # Turning it off restores the page exactly, including its own styles.
+    panel.click("label[for=video-shield-toggle]")
+    shop.wait_for_function("() => !document.querySelector('[data-pl-censored]')")
+    filters = shop.evaluate(FILTERS_JS)
+    assert filters["feed"] == "saturate(2)"
+    assert filters["name"] == "none" and filters["email"] == "none"

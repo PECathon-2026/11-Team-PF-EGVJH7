@@ -9,6 +9,9 @@ import {
   DEFAULT_SETTINGS, firewallSelfTest, protectionBlocker, runAgent, scanPage, scanSummary, sendToTab,
 } from "../core/orchestrator.js";
 import { SCENARIOS, evaluateScan, verdictOf } from "../core/scenarios.js";
+import { PROFILE_FIELDS, effectiveProfile } from "../core/profile.js";
+import { mask } from "../core/sanitize.js";
+import { syntheticIdentity } from "../core/synthetic.js";
 import { DEFAULT_UI_SETTINGS } from "./store.js";
 
 const MAX_ACTIVITY = 200;
@@ -62,6 +65,45 @@ export function createController(store, { pinnedTabId = null } = {}) {
 
   // --- Settings -------------------------------------------------------------
 
+  // --- Autofill profile ------------------------------------------------------
+  // Real values live only in chrome.storage.session (memory, cleared when the
+  // browser closes); the store only ever gets masked values.
+
+  async function loadProfile() {
+    let { profile = {}, syntheticIdentity: synthetic } = await chrome.storage.session.get(["profile", "syntheticIdentity"]);
+    if (!synthetic) {
+      synthetic = syntheticIdentity();
+      await chrome.storage.session.set({ syntheticIdentity: synthetic });
+    }
+    const own = Object.fromEntries(PROFILE_FIELDS.filter((d) => profile[d.key]).map((d) => [d.key, mask(profile[d.key])]));
+    store.set({ profile: { own, synthetic } });
+  }
+
+  async function saveProfileField(key, value) {
+    const { profile = {} } = await chrome.storage.session.get("profile");
+    if (value) profile[key] = value;
+    else delete profile[key];
+    await chrome.storage.session.set({ profile });
+    await log("profile_changed", { field: key, set: Boolean(value) });
+    await loadProfile();
+  }
+
+  async function clearProfile() {
+    await chrome.storage.session.remove("profile");
+    await log("profile_cleared", {});
+    await loadProfile();
+  }
+
+  async function newSyntheticIdentity() {
+    await chrome.storage.session.set({ syntheticIdentity: syntheticIdentity() });
+    await loadProfile();
+  }
+
+  async function currentProfile() {
+    const { profile = {}, syntheticIdentity: synthetic = {} } = await chrome.storage.session.get(["profile", "syntheticIdentity"]);
+    return effectiveProfile(profile, synthetic, S.settings.useSyntheticIdentity);
+  }
+
   async function loadSettings() {
     const { settings = {} } = await chrome.storage.local.get("settings");
     const { apiKey } = await chrome.storage.session.get("apiKey");
@@ -79,6 +121,19 @@ export function createController(store, { pinnedTabId = null } = {}) {
       }
     }
     if ("overlay" in patch) await setOverlay(patch.overlay);
+    if ("videoShield" in patch) {
+      await log("video_shield", { on: patch.videoShield });
+      activity(`Video privacy shield ${patch.videoShield ? "on" : "off"}`, patch.videoShield ? "ok" : "warn", "settings");
+      if (S.tab.access && S.tab.id != null) {
+        try {
+          await ensureContentScript(S.tab.id);
+          await applyVideoShield(S.tab.id, S.scan);
+        } catch {
+          // Page not injectable right now; applied on the next scan.
+        }
+        await refreshTab();
+      }
+    }
   }
 
   async function setApiKey(key) {
@@ -169,6 +224,12 @@ export function createController(store, { pinnedTabId = null } = {}) {
     return S.tab.id;
   }
 
+  // Blur video/canvas feeds and every personal detail found by the last scan.
+  const visibleDetailIds = (rows = []) => [...new Set(rows.filter((r) => !r.hidden).map((r) => r.id))];
+  async function applyVideoShield(tabId, scan) {
+    return sendToTab(tabId, { cmd: "shield", video: S.settings.videoShield, detailIds: visibleDetailIds(scan?.rows) });
+  }
+
   async function setOverlay(visible) {
     if (!S.tab.access || S.tab.id == null) return;
     try {
@@ -219,6 +280,7 @@ export function createController(store, { pinnedTabId = null } = {}) {
         quarantined: summary.injections.filter((i) => i.quarantined && !i.hidden).map((i) => i.id),
       });
       await sendToTab(tabId, { cmd: "overlayVisible", visible: S.settings.overlay });
+      await applyVideoShield(tabId, summary);
       await log("page_scanned", {
         risk: summary.risk.total, protectedValues: summary.protectedValues,
         injections: summary.injections.length, egressOk: summary.egress.ok, honeytokenOk: summary.honeytokenOk,
@@ -267,6 +329,7 @@ export function createController(store, { pinnedTabId = null } = {}) {
       } else if (kind === "scan") {
         const { step, source, ...summary } = data;
         recordScan(summary, `agent step ${step + 1}`);
+        if (S.settings.videoShield && S.tab.id != null) applyVideoShield(S.tab.id, summary).catch(() => {});
       } else if (kind === "egress") {
         if (data.kind === "http") {
           const stats = { ...S.stats, inspected: S.stats.inspected + 1, blocked: S.stats.blocked + (data.ok ? 0 : 1) };
@@ -311,13 +374,15 @@ export function createController(store, { pinnedTabId = null } = {}) {
       return status(err.message);
     }
 
+    const profile = await currentProfile();
     abort = new AbortController();
     store.set({ agent: { ...S.agent, running: true, task, status: { text: "Running…", tone: "" } } });
-    await log("run_started", { mode, maxSteps: S.settings.maxSteps ?? 6 });
+    await log("run_started", { mode, maxSteps: S.settings.maxSteps });
     try {
       await runAgent({
         tabId, task, mode, apiKey, model: S.settings.model,
-        maxSteps: Math.min(10, Math.max(1, Number(S.settings.maxSteps) || 6)),
+        profile: profile.values, profileSource: profile.source,
+        maxSteps: Math.min(20, Math.max(1, Number(S.settings.maxSteps) || 12)),
         signal: abort.signal, ui: uiBridge, ledger, settings,
       });
     } catch (err) {
@@ -424,6 +489,7 @@ export function createController(store, { pinnedTabId = null } = {}) {
       const checks = evaluateScan(scenario, snapshot, scan);
 
       if (scenario.dynamic?.includes("payApproval")) checks.push(...(await payApprovalChecks(tab.id, scenario)));
+      if (scenario.dynamic?.includes("videoShield")) checks.push(await videoShieldCheck(tab.id, scan));
 
       await sendToTab(tab.id, {
         cmd: "overlay",
@@ -482,6 +548,23 @@ export function createController(store, { pinnedTabId = null } = {}) {
     return out;
   }
 
+  // Turns the shield on in the test tab and reads back what the page renders.
+  async function videoShieldCheck(tabId, scan) {
+    const counts = await sendToTab(tabId, { cmd: "shield", video: true, detailIds: visibleDetailIds(scan.sanitized.rows) });
+    const [{ result: filters }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => [...document.querySelectorAll("[data-pl-censored]")].map((el) => `${el.tagName.toLowerCase()}:${getComputedStyle(el).filter}`),
+    });
+    const blurred = filters.filter((f) => f.includes("blur("));
+    return {
+      name: "Video privacy shield blurs feeds and personal details on the page",
+      expected: "Video feed, participant name and email rendered blurred",
+      actual: `${counts.censoredMedia} feed(s), ${counts.censoredDetails} personal detail(s) blurred`,
+      status: counts.censoredMedia > 0 && counts.censoredDetails >= 2 && blurred.length === filters.length ? "pass" : "fail",
+      evidence: `Computed styles: ${filters.join(", ") || "none"}`,
+    };
+  }
+
   async function runAllScenarios() {
     for (const s of SCENARIOS) await runScenario(s.id);
   }
@@ -490,6 +573,7 @@ export function createController(store, { pinnedTabId = null } = {}) {
 
   async function init() {
     await loadSettings();
+    await loadProfile();
     await refreshTab();
     await log("panel_opened", {});
     await runSelfTest();
@@ -503,6 +587,7 @@ export function createController(store, { pinnedTabId = null } = {}) {
   return {
     init, refreshTab, requestAccess, grantedOrigins, revokeOrigin, setSiteBlocked,
     updateSettings, setApiKey, testConnection,
+    saveProfileField, clearProfile, newSyntheticIdentity,
     scanCurrentPage, setOverlay, runTask, stop, resolveApproval,
     runSelfTest, networkPolicy,
     verifyLedger, exportReceipt, clearLedger,

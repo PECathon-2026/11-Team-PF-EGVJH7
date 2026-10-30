@@ -337,3 +337,26 @@ test("Aadhaar-shaped substrings of our own synthetic cards are not false positiv
   // Real Aadhaar numbers are still detected by P2.
   assert.equal(findAadhaar("UID 2341 2341 2346").length, 1);
 });
+
+test("labels on checkboxes, buttons and links are not treated as secret fields", () => {
+  const snapshot = {
+    elements: [
+      input("e1", { type: "checkbox", label: "Show password", value: "on" }),
+      input("e2", { tag: "button", type: "button", text: "Show password" }),
+      input("e3", { tag: "a", type: null, text: "Forgot password?", label: "Forgot password?" }),
+      input("e4", { type: "checkbox", label: "Remember my email", value: "on" }),
+      input("e5", { type: "radio", name: "card_type", label: "Credit card", value: "credit" }),
+      // Still detected:
+      input("p1", { type: "password", label: "Password", value: "hunter2" }),
+      input("p2", { type: "email", label: "Email", value: "a@b.test" }),
+      input("p3", { tag: "textarea", label: "API key", value: "abc123" }),
+      input("p4", { tag: "button", type: "button", text: "Pay with 4111 1111 1111 1111" }),
+    ],
+  };
+  const flagged = Object.fromEntries(detect(snapshot).map((d) => [d.elementId, d.type]));
+  for (const id of ["e1", "e2", "e3", "e4", "e5"]) assert.equal(flagged[id], undefined, id);
+  assert.deepEqual(
+    { p1: flagged.p1, p2: flagged.p2, p3: flagged.p3, p4: flagged.p4 },
+    { p1: "PASSWORD", p2: "EMAIL", p3: "API_KEY", p4: "CARD" },
+  );
+});

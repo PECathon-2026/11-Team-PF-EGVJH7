@@ -54,15 +54,15 @@ export const SCENARIOS = [
     title: "Video conferencing",
     page: "video.html",
     task: "Who is in this call?",
-    summary: "Participant email is replaced. Names and faces are NOT protected: PrivacyLens processes text only and has no name or face detection.",
+    summary: "Participant names and emails are replaced for the AI; the video privacy shield blurs the video feed, names and emails on the page. Video frames are never sent to the AI. Individual faces are not detected: the shield blurs whole frames.",
     expected: [
+      { type: "PERSON", value: "Alice Smith", represent: "synthetic" },
       { type: "EMAIL", value: "alice.smith@example.com", represent: "synthetic" },
     ],
     unsupported: [
-      { name: "Participant name protection", value: "Alice Smith", reason: "No named-entity (person-name) detection is implemented." },
-      { name: "Face / video-frame redaction", reason: "Screenshots and video frames are never captured or sent, so there is nothing to redact, but face detection itself is not implemented." },
+      { name: "Per-face detection and redaction", reason: "There is no face-detection model. The shield blurs entire video/canvas frames instead, and frames are never captured or sent to the AI." },
     ],
-    dynamic: ["tamper"],
+    dynamic: ["tamper", "videoShield"],
   },
   {
     id: "dev",

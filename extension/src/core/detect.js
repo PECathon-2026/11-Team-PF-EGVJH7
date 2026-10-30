@@ -2,6 +2,7 @@
 // scored. Port of core/detect/{__init__,structural,merge}.py.
 
 import { FINDERS } from "./patterns.js";
+import { findLabelledNames, isNameField } from "./names.js";
 
 const AUTOCOMPLETE_MAP = {
   "cc-number": "CARD", "cc-csc": "CARD", "cc-exp": "CARD",
@@ -30,7 +31,20 @@ const RISK_WEIGHTS = {
 
 export const SCANNED_FIELDS = ["text", "value", "label", "placeholder"];
 
+// Controls that hold a choice or an action, not something the user typed:
+// their label may say "Show password" or "Remember my email", but their
+// value ("on", a button caption) is never the secret itself.
+const NON_TEXT_INPUT_TYPES = new Set(["checkbox", "radio", "button", "submit", "reset", "image", "file", "range", "color"]);
+
+export function isTextEntry(el) {
+  const type = (el.type || "").trim().toLowerCase();
+  return el.tag === "textarea" || (el.tag === "input" && !NON_TEXT_INPUT_TYPES.has(type));
+}
+
 function structuralHits(el) {
+  // Page-structure hints only apply to fields a value is typed into. Text on
+  // buttons, links and checkboxes is still covered by the pattern finders.
+  if (!isTextEntry(el)) return [];
   const out = [];
   const value = el.value || "";
   const span = value ? [0, value.length] : null;
@@ -46,12 +60,16 @@ function structuralHits(el) {
   const hay = [el.name, el.label, el.id, attrs.placeholder].filter(Boolean).join(" ").toLowerCase();
   const isEmailField = type === "email" || ac === "email" || hay.includes("email");
 
+  // "Name on card" / "Card holder" hold a name, not a card number.
+  const nameField = !isEmailField && type !== "password" && isNameField(hay);
   for (const [words, t] of KEYWORD_MAP) {
+    if (nameField && (t === "CARD" || t === "PAN")) continue;
     if (words.some((w) => hay.includes(w))) {
       hit(t);
       break;
     }
   }
+  if (nameField) hit("PERSON");
   if (isEmailField) hit("EMAIL");
   if (!isEmailField && hay.includes("address")) hit("ADDRESS");
 
@@ -134,6 +152,10 @@ export function detect(snapshot) {
         for (const [start, end] of fn(content)) {
           raw.push({ type, source: "regex", elementId: el.id, field, span: [start, end], confidence: 1 });
         }
+      }
+      // Names announced by a label ("Name:", "Host:", "Speaker:" ...).
+      for (const [start, end] of findLabelledNames(content)) {
+        raw.push({ type: "PERSON", source: "regex", elementId: el.id, field, span: [start, end], confidence: 1 });
       }
     }
   }
